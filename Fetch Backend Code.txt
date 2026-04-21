@@ -1,0 +1,504 @@
+import { fetch } from 'wix-fetch';
+import { mediaManager } from 'wix-media-backend';
+import wixData from 'wix-data';
+const dataURLdecoder = require('image-data-uri');
+import got from 'got';
+
+export async function uploadImage(url) {
+    //return 'broken'
+    return dataURLdecoder.encodeFromURL(url).then(async (res) => {
+        console.log(res)
+        const bufferInfo = await dataURLdecoder.decode(res);
+        console.log('Buffer Info before', bufferInfo);
+        let buffer = await bufferInfo.dataBuffer;
+        console.log('Buffer After', buffer);
+        //  - - -- - - - - - --  - - -  -
+        return await mediaManager.upload(
+            // "/myuploads", buffer, `${Math.random()}.jpeg`,
+            "/JeffUploadsNew", buffer, url, {
+                "mediaOptions": {
+                    "mimeType": "image/jpeg",
+                    "mediaType": "image"
+                },
+                "metadataOptions": {
+                    "isPrivate": false,
+                    "isVisitorUpload": false,
+                    "context": {
+                        "someKey1": "someValue1",
+                        "someKey2": "someValue2"
+                    }
+                }
+            }).then((fileInfo) => {
+                console.log(fileInfo)
+            return {
+                "type": "Image",
+                "title": "test",
+                "src": fileInfo.fileUrl
+            }
+        }).catch(err => {
+            console.log('Errro on Media Manager- - - >', err);
+            return err
+        })
+
+        //  - - - - -  - - - - - - - - -  -    
+    }).catch(err => {
+        console.log('Errro on Encode Form URL- - - >', err);
+        return err
+    })
+
+}
+
+export function uploadImg(url) {
+    return got(url, { responseType: 'buffer' })
+        .then(async (imagebfr) => {
+            //   console.log(await imagebfr.body)
+            return await mediaManager.upload(
+                "/myUploadFolder/subfolder",
+                imagebfr.body,
+                "myFileName.jpg", {
+                    "mediaOptions": {
+                        "mimeType": "image/jpeg",
+                        "mediaType": "image"
+                    },
+                    "metadataOptions": {
+                        "isPrivate": false,
+                        "isVisitorUpload": false,
+                        "context": {
+                            "someKey1": "someValue1",
+                            "someKey2": "someValue2"
+                        }
+                    }
+                }
+            ).then((fileInfo) => {
+                console.log(fileInfo)
+                return {
+                    "type": "Image",
+                    "title": "TEST",
+                    "src": fileInfo.fileUrl
+                }
+            }).catch(err => {
+                console.log('Error on Media Manager- - - >', err);
+                return 'broken'
+            })
+        });
+}
+
+export function fetchData(ids) {
+    ids = ids ? ids : '';
+    // let url = 'https://api.mlsgrid.com/v2/Property?$filter=OriginatingSystemName%20eq%20%27mfrmls%27%20and%20ModificationTimestamp%20gt%202020-12-30T23:59:59.99Z&$expand=Media,PropertyRooms,PropertyUnitTypes'
+    let url = `https://api.mlsgrid.com/v2/Property?$filter=OriginatingSystemName%20eq%20%27mfrmls%27%20and%20ListingId%20in%20(${ids})&$expand=Media,Rooms,UnitTypes&$count=true&$top=2000`
+    let options = {
+        'method': 'GET',
+        headers: {
+            "Authorization": `Bearer b077d2f6f585dc94da2bfac2f0e25162eaec2095`
+        }
+    }
+    return fetch(url, options)
+        .then((response) => {
+            return response.json()
+        }).then((data) => {
+            return data
+        }).catch(err => console.log(err));
+
+}
+
+export async function modifyData(data) {
+    let options = {
+        "suppressAuth": true
+    };
+
+}
+
+export function insertToHousesForSale(houseData) {
+    wixData.query("HousesforSale").eq("_id", houseData._id).ne("listingPricePure", houseData.listingPricePure).limit(1000).find().then((results) => {
+        if (results.items.length > 0) {
+            wixData.update('HousesforSale', houseData).then(() => {
+                console.log('- - - Data Updated Successfully - - -');
+            }).catch(e => console.log('Error on insertToHousesForSale - - >', e))
+
+        } else {
+            wixData.insert('HousesforSale', houseData).then(() => {
+                console.log('- - - Data Inserted Successfully - - -');
+            }).catch(e => console.log('Error on insertToHousesForSale - - >', e))
+        }
+
+        // wixData.insert('HousesforSale', houseData).then(() => {
+        //     console.log('- - - Data Inserted Successfully - - -');
+        // }).catch(e => console.log('Error on insertToHousesForSale() - - >', e))
+    })
+
+}
+
+export function checkIfPresent(dataID, price) {
+    return wixData.query("HousesforSale").eq("_id", dataID).eq("listingPricePure", price).limit(1000).find().then((results) => {
+        if (results.items.length > 0) {
+            console.log(results.items[0])
+            console.log(("---------------- ALREADY PRESENT IN THE DB--------------"));
+            return true
+        } else {
+            return false
+        }
+    });
+}
+
+// export function removeOldDataAAAA(data) {
+//     var returnedIds = []
+//     var imagesToBeDeleted = []
+
+//     return wixData.query("HousesforSale").limit(1000).find().then((results) => {
+//         if (results.items.length > 0) {
+//             for (let j = 0; j < results.items.length; j++) {
+//                 imagesToBeDeleted.push(results.items[j]['listingImageGallery'])
+//                 returnedIds.push(results.items[j]['_id'])
+//             }
+//             console.log(data);
+//             console.log(returnedIds);
+//             var arr = [...data, ...returnedIds];
+//             var obj = arr.reduce((r, e) => (r[e] = (r[e] || 0) + 1, r), {});
+//             var uniq = Object.keys(obj).filter(e => obj[e] == 1)
+//             console.log(uniq)
+//             //let difference = returnedIds.filter(x => !data.includes(x));
+
+//             console.log(("----------------DATA TO BE REMOVED --------------"));
+//             wixData.bulkRemove("HousesforSale", uniq)
+//                 .then((results) => {
+//                     return true
+//                 })
+//                 .catch((err) => {
+//                     let errorMsg = err;
+//                     return false
+//                 });
+
+//         } else {
+//             return false
+//         }
+//     });
+// }
+export function myMoveFilesToTrashFunctionAAAA(fileUrls) {
+    return mediaManager.moveFilesToTrash(fileUrls)
+        .then(() => {
+            console.log('Success! Files have been trashed.');
+        })
+        .catch((error) => {
+            console.error(error);
+        })
+}
+
+//Tue 19th DEC
+// export function deleteFromStaging(id) {
+//     id ? id : null
+//     wixData.remove('Stagging', id).then(() => {
+//         console.log('- - - Data Deleted Successfully - - -');
+//     }).catch(e => console.log('Error on deleteFromStaging() - - >', e))
+// }
+
+// // Bulk insert to "Stagging" and truncate "HousesForSale" collection
+// export function bulkInsertToStaging(housesData) { // receive array of object
+//     return wixData.bulkInsert('Stagging', housesData).then(res => {
+//         return res.insertedItemIds
+//     }).catch(e => console.log('Error on insertToHousesForSale() - - >', e))
+// }
+
+export function deleteFromStaging(id) {
+    id ? id : null
+    // var updateItem = { "_id": id, "pushStatus": true }
+    // wixData.update('Stagging', updateItem).then(() => {
+    //     console.log('- - - Status Updated Successfully - - -');
+    // }).catch(e => console.log('Error on deleteFromStaging() - - >', e))
+    return wixData.get("Stagging", id)
+        .then((item) => {
+            item.pushStatus = true; // updated last name
+            wixData.update("Stagging", item);
+            console.log(item); //see item below
+            return "done"
+        })
+        .catch((err) => {
+            console.log(err);
+            return err;
+        });
+
+}
+
+// Bulk insert to "Stagging" and truncate "HousesForSale" collection
+export function bulkInsertToStaging(housesData) {
+    return wixData.insert("Stagging", housesData)
+        .then((data) => {
+            console.log(`Inserted item with ID: ${data._id}`);
+            return data._id;
+        })
+        .catch(e => {
+            console.log('Error on insertToHousesForSale() - - >', e);
+            return [];
+        });
+}
+
+export async function bulkInsertToStagingPP(housesData) {
+    const chunkSize = 50; // set the chunk size
+    const chunks = housesData.reduce((acc, _, i) => (i % chunkSize ? acc : [...acc, housesData.slice(i, i + chunkSize)]), []);
+
+    let insertedIds = [];
+    for (const chunk of chunks) {
+        try {
+            const result = await wixData.bulkInsert('Stagging', chunk);
+            insertedIds = insertedIds.concat(result.insertedItemIds);
+        } catch (error) {
+            console.log('Error on bulkInsertToStaging() ->', error);
+        }
+    }
+    return insertedIds;
+}
+
+// Get Data from stging collection
+export function getStaging() { //array of Id's
+    return wixData.query('Stagging').limit(1000).find().then((res) => {
+        return res.items
+    }).catch(e => console.log('Error on deleteFromStaging() - - >', e))
+}
+
+export function getNumber(number) {
+    let isNUm = typeof (number)
+    if (isNUm === "number") {
+        number = number.toString()
+        if (number.length === 6) {
+            let shortNum = `$${number.slice(0, 1)   }00s`
+            return shortNum
+        } else if (number.length >= 7 && number.length <= 9) {
+            let numLen = number.length
+            let shortNum = numLen === 7 ? number.slice(0, 1) : numLen === 8 ? number.slice(0, 2) : numLen === 9 && number.slice(0, 3)
+            return `${shortNum}M+`
+        } else {
+            return `$${number}`
+        }
+    } else {
+        return isNUm
+    }
+}
+
+// Get MLS Ids from Collection "MLS_id_list"
+export const getMLSIds = () => {
+    return wixData.query('MLS_id_list').limit(1000).find().then(async (res) => {
+        let ids = await res.length ? res.items.map((val) => 'MFR' + val.mls) : []
+        return ids
+    })
+}
+
+export function removeOldData() {
+    let uniqueIds;
+    let data = []; // Initialize an empty array to store ids
+
+    return wixData.query('Stagging').limit(1000).find()
+        .then(async (res) => {
+        //    data = res.length ? res.items.map((val) => 'MFR' + val.mls) : [];
+            data= res.items.map(item => item._id);
+
+            return data;
+        })
+        .then(() => {
+            return wixData.query("HousesforSale")
+                .limit(1000)
+                .find();
+        })
+        .then(async (result) => {
+            const returnedIds = result.items.map(item => item._id);
+            console.log(data);
+            console.log(returnedIds);
+
+            var arr = [...data, ...returnedIds];
+            var obj = arr.reduce((r, e) => (r[e] = (r[e] || 0) + 1, r), {});
+            uniqueIds = Object.keys(obj).filter(e => obj[e] == 1);
+            console.log(uniqueIds);
+
+            const imageUrlsList = await Promise.all(uniqueIds.map(id => {
+                return wixData.get("HousesforSale", id)
+                    .then((item) => item['listingImageGallery']);
+            }));
+
+            const urlsToDelete = imageUrlsList.reduce((acc, val) => acc.concat(val), []);
+
+            const srcArray = urlsToDelete
+                .filter(item => item.type === 'Image')
+                .map(item => item.src);
+
+            return myMoveFilesToTrashFunction(srcArray);
+        })
+        .then(() => {
+            console.log(uniqueIds);
+            return wixData.bulkRemove("HousesforSale", uniqueIds);
+        })
+        .then(() => {
+            console.log('Data has been removed successfully.');
+            return "ddobee";
+        })
+        .catch((err) => {
+            console.error(err);
+            return false;
+        });
+}
+
+
+// export function removeOldData(data) {
+//     let uniqueIds;
+//     return wixData.query("HousesforSale")
+//         .limit(1000)
+//         .find()
+//         .then(async (result) => {
+//             const returnedIds = result.items.map(item => item._id);
+//             console.log(data);
+//             console.log(returnedIds);
+//             var arr = [...data, ...returnedIds];
+//             var obj = arr.reduce((r, e) => (r[e] = (r[e] || 0) + 1, r), {});
+//             uniqueIds = Object.keys(obj).filter(e => obj[e] == 1)
+//             console.log(uniqueIds)
+//             const imageUrlsList = await Promise.all(uniqueIds.map(id => {
+//                 return wixData.get("HousesforSale", id)
+//                     .then((item) => item['listingImageGallery']);
+//             }));
+
+//             // Flatten the list of image URLs
+//             const urlsToDelete = imageUrlsList.reduce((acc, val) => acc.concat(val), []);
+
+//             // Extract only the 'src' values from each item in the listingImageGallery array
+//             const srcArray = urlsToDelete
+//                 .filter(item => item.type === 'Image') // Ensure the item has type 'Image'
+//                 .map(item => item.src); // Extract only the 'src' value
+
+//             // Call myMoveFilesToTrashFunctionT to delete the files
+//            return myMoveFilesToTrashFunction(srcArray);
+//         })
+//         .then(() => {
+//             // Remove data with unique IDs
+//             console.log(uniqueIds)
+//           return wixData.bulkRemove("HousesforSale", uniqueIds);
+//         })
+//         .then(() => {
+//             console.log('Data has been removed successfully.');
+//             return "ddobee";
+//         })
+//         .catch((err) => {
+//             console.error(err);
+//             return false;
+//         });
+// }
+
+// export function removeOldDataXXX(data) {
+//     // Combine data and returnedIds, then find unique IDs
+//     console.log(data)
+//     // Fetch image URLs for each unique ID in parallel
+//     return Promise.all(data.map(id => {
+//             return wixData.get("HousesforSale", id)
+//                 .then((item) => {
+//                     console.log(item)
+//                     return item['listingImageGallery'];
+//                 });
+//         }))
+//         .then((imageUrlsList) => {
+//             console.log(imageUrlsList)
+//             // Flatten the list of image URLs
+//             const urlsToDelete = imageUrlsList.reduce((acc, val) => acc.concat(val), []);
+
+//             // Extract only the 'src' values from each item in the listingImageGallery array
+//             const srcArray = urlsToDelete
+//                 .filter(item => item.type === 'Image') // Ensure the item has type 'Image'
+//                 .map(item => item.src); // Extract only the 'src' value
+
+//             // Call myMoveFilesToTrashFunctionT to delete the files
+//             return myMoveFilesToTrashFunction(srcArray);
+//         }).then(() => {
+//             console.log('Before bulkRemove'); // Log before bulkRemove
+
+//             //    After deleting images, remove the data
+//             return wixData.bulkRemove("HousesforSale", data).then((data) => {
+//                 console.log(data)
+//             });
+//         })
+//         .then(() => {
+//             console.log('Data has been removed successfully.');
+//             return true;
+//         })
+//         .catch((err) => {
+//             console.error(err);
+//             return false;
+//         });
+// }
+
+export function myMoveFilesToTrashFunction(fileUrls) {
+    console.log(fileUrls)
+    return mediaManager.moveFilesToTrash(fileUrls)
+        .then(() => {
+            console.log('Success! Files have been trashed.');
+            return "done";
+        })
+        .catch((error) => {
+            console.error(error);
+            return error;
+        });
+}
+
+export function updateInsertDateA(listData) {
+    var dateofPull = new Date()
+    for (let i = 0; i < listData.length; i++) {
+        const element = listData[i];
+        element["dateOfMlsPull"] = dateofPull;
+        wixData.query("HousesforSale").eq("_id", listData._id).limit(1000).find().then((results) => {
+            if (results.items.length > 0) {
+                wixData.update('HousesforSale', element).then(() => {
+                    return "done"
+                    console.log('- - - Data Updated Successfully - - -');
+                }).catch((e) => {
+                    console.log('Error on updateInsertDate - - >', e)
+                    return "not done"
+                })
+            }
+        })
+    }
+    //
+
+}
+
+// export async function updateInsertDate(listData) {
+//     var dateofPull = new Date();
+//     for (let i = 0; i < listData.length; i++) {
+//         const element = listData[i];
+//         element["dateOfMlsPull"] = dateofPull;
+//         try {
+//             const results = await wixData.query("HousesforSale").eq("_id", element._id).limit(1000).find();
+//             if (results.items.length > 0) {
+//                 await wixData.update('HousesforSale', element);
+//                 console.log('- - - Data Updated Successfully - - -');
+//             }
+//         } catch (e) {
+//             console.log('Error on updateInsertDate - - >', e);
+//         }
+//     }
+//     return "done";
+// }
+
+export async function updateInsertDate() {
+    const dateOfPull = new Date();
+
+    try {
+        // Fetch all items from the "HousesforSale" collection
+        const results = await wixData.query("HousesforSale").limit(1000).find();
+
+        // Use Promise.all to update all items in parallel
+        await Promise.all(results.items.map(async (element) => {
+            try {
+                const vax = { ...element };
+                vax.dateOfMlsPull = dateOfPull;
+
+                // Use wixData.update to update each item
+                await wixData.update('HousesforSale', vax);
+
+                console.log('- - - Data Updated Successfully - - -');
+            } catch (e) {
+                console.log(`Error on update for item with _id ${element._id} - - >`, e);
+            }
+        }));
+
+        console.log('All data updated successfully.');
+        return "done";
+    } catch (e) {
+        console.log('Error on fetching or updating data in updateInsertDate - - >', e);
+        return "error";
+    }
+}
