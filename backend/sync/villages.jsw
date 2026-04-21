@@ -1,0 +1,30 @@
+import wixData from 'wix-data';
+
+let cache = null;
+
+async function loadVillages() {
+    if (cache) return cache;
+    const res = await wixData.query('Villages').limit(1000).find({ suppressAuth: true });
+    cache = res.items.map(v => ({
+        matchPattern: (v.matchPattern || '').toLowerCase(),
+        villageName: v.villageName,
+        villageURL: v.villageURL,
+        village1: v.village1,
+        villageSortHelp: v.villageSortHelp || v.villageName,
+        blueTag1: v.blueTag1 || '',
+        purpleTag1: v.purpleTag1 || '',
+        greenTag1: v.greenTag1 || ''
+    })).filter(v => v.matchPattern);
+    return cache;
+}
+
+export function invalidateVillageCache() {
+    cache = null;
+}
+
+export async function matchVillage(subdivisionName) {
+    const villages = await loadVillages();
+    const needle = (subdivisionName || '').toLowerCase();
+    if (!needle) return null;
+    return villages.find(v => needle.includes(v.matchPattern)) || null;
+}
