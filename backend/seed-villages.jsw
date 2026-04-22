@@ -1,0 +1,32 @@
+import wixData from 'wix-data';
+import { VILLAGE_SEED } from 'backend/sync/villages.seed';
+import { invalidateVillageCache } from 'backend/sync/villages';
+
+// Populates the `Villages` reference collection from the generated seed.
+// Idempotent: uses matchPattern as the stable key and bulk-saves in chunks so
+// the call completes well inside Wix's request budget.
+export async function seedVillages() {
+    const existing = await wixData.query('Villages').limit(1000).find({ suppressAuth: true });
+    const byPattern = new Map();
+    for (const item of existing.items) {
+        if (item.matchPattern) byPattern.set(item.matchPattern, item);
+    }
+
+    const toSave = VILLAGE_SEED.map(entry => {
+        const current = byPattern.get(entry.matchPattern);
+        return current ? { ...current, ...entry } : { ...entry };
+    });
+
+    const chunkSize = 50;
+    let inserted = 0;
+    let updated = 0;
+    for (let i = 0; i < toSave.length; i += chunkSize) {
+        const chunk = toSave.slice(i, i + chunkSize);
+        const res = await wixData.bulkSave('Villages', chunk, { suppressAuth: true });
+        inserted += res.inserted || 0;
+        updated += res.updated || 0;
+    }
+
+    invalidateVillageCache();
+    return { total: toSave.length, inserted, updated };
+}
