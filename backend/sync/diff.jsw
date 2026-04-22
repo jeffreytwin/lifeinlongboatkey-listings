@@ -1,0 +1,81 @@
+import wixData from 'wix-data';
+
+const COLLECTION = 'HousesforSale';
+
+async function fetchExistingByIds(ids) {
+    if (!ids.length) return new Map();
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));
+    const found = new Map();
+    for (const chunk of chunks) {
+        const res = await wixData.query(COLLECTION).hasSome('_id', chunk).limit(1000).find({ suppressAuth: true });
+        for (const item of res.items) found.set(item._id, item);
+    }
+    return found;
+}
+
+async function fetchAllIds() {
+    const all = [];
+    let skip = 0;
+    const pageSize = 1000;
+    // loop until fewer than pageSize returned
+    while (true) {
+        const res = await wixData.query(COLLECTION).fields('_id').limit(pageSize).skip(skip).find({ suppressAuth: true });
+        for (const item of res.items) all.push(item._id);
+        if (res.items.length < pageSize) break;
+        skip += pageSize;
+    }
+    return all;
+}
+
+function hasMeaningfulChange(existing, incoming) {
+    if (!existing) return true;
+    if (existing.listingPricePure !== incoming.listingPricePure) return true;
+    if (existing.standardStatus !== incoming.standardStatus) return true;
+    const a = existing.modificationTimestamp ? new Date(existing.modificationTimestamp).getTime() : 0;
+    const b = incoming.modificationTimestamp ? new Date(incoming.modificationTimestamp).getTime() : 0;
+    return b > a;
+}
+
+export async function planIncremental(incomingUpserts, incomingRemovals) {
+    const allIds = [...incomingUpserts.map(i => i._id), ...incomingRemovals];
+    const existing = await fetchExistingByIds(allIds);
+
+    const toInsert = [];
+    const toUpdate = [];
+    for (const item of incomingUpserts) {
+        const prev = existing.get(item._id);
+        if (!prev) toInsert.push(item);
+        else if (hasMeaningfulChange(prev, item)) toUpdate.push({ item, prev });
+    }
+
+    const toDelete = [];
+    for (const id of incomingRemovals) {
+        const prev = existing.get(id);
+        if (prev) toDelete.push(prev);
+    }
+    return { toInsert, toUpdate, toDelete };
+}
+
+export async function planFull(incomingUpserts) {
+    const incomingIds = new Set(incomingUpserts.map(i => i._id));
+    const existingIds = await fetchAllIds();
+    const existing = await fetchExistingByIds(existingIds);
+
+    const toInsert = [];
+    const toUpdate = [];
+    for (const item of incomingUpserts) {
+        const prev = existing.get(item._id);
+        if (!prev) toInsert.push(item);
+        else if (hasMeaningfulChange(prev, item)) toUpdate.push({ item, prev });
+    }
+
+    const toDelete = [];
+    for (const id of existingIds) {
+        if (!incomingIds.has(id)) {
+            const prev = existing.get(id);
+            if (prev) toDelete.push(prev);
+        }
+    }
+    return { toInsert, toUpdate, toDelete };
+}

@@ -1,0 +1,143 @@
+import wixData from 'wix-data';
+import { fetchProperties } from 'backend/sync/mlsgrid';
+import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
+import { transformListing } from 'backend/sync/transform';
+import { planIncremental, planFull } from 'backend/sync/diff';
+import { resolveGallery, mediaSrcsToTrash, trashMedia } from 'backend/sync/media';
+
+const COLLECTION = 'HousesforSale';
+const RUNS = 'SyncRuns';
+
+async function recordRun(mode, status, counts, errorMessage) {
+    const row = {
+        startedAt: counts.startedAt,
+        finishedAt: new Date(),
+        mode,
+        status,
+        inserted: counts.inserted || 0,
+        updated: counts.updated || 0,
+        deleted: counts.deleted || 0,
+        imagesUploaded: counts.imagesUploaded || 0,
+        imagesFailed: counts.imagesFailed || 0,
+        mlsGridRequestCount: counts.mlsGridRequestCount || 0,
+        mlsGridListingCount: counts.mlsGridListingCount || 0,
+        errorMessage: errorMessage || null
+    };
+    try {
+        await wixData.insert(RUNS, row, { suppressAuth: true });
+    } catch (err) {
+        console.log('recordRun failed', err && err.message);
+    }
+}
+
+async function getLastSuccessfulRunAt() {
+    try {
+        const res = await wixData.query(RUNS).eq('status', 'ok').descending('startedAt').limit(1).find({ suppressAuth: true });
+        if (res.items.length) return new Date(res.items[0].startedAt);
+    } catch (err) {
+        console.log('getLastSuccessfulRunAt error', err && err.message);
+    }
+    const fallback = new Date();
+    fallback.setHours(fallback.getHours() - 2);
+    return fallback;
+}
+
+async function classify(mlsItems) {
+    const upsertRaw = [];
+    const removalIds = [];
+    for (const raw of mlsItems) {
+        if (!raw || !raw.ListingId) continue;
+        const status = (raw.StandardStatus || '').toLowerCase();
+        if (status === 'active') {
+            const village = await matchVillage(raw.SubdivisionName);
+            if (!village) continue;
+            upsertRaw.push({ raw, village });
+        } else {
+            removalIds.push(raw.ListingId);
+        }
+    }
+    return { upsertRaw, removalIds };
+}
+
+async function applyWrites({ toInsert, toUpdate, toDelete }) {
+    const counts = { inserted: 0, updated: 0, deleted: 0, imagesUploaded: 0, imagesFailed: 0 };
+
+    for (const item of toInsert) {
+        const { gallery, uploadedCount, errorCount } = await resolveGallery(item.listingImageGallery, []);
+        counts.imagesUploaded += uploadedCount;
+        counts.imagesFailed += errorCount;
+        const record = { ...item, listingImageGallery: gallery, listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage };
+        try {
+            await wixData.insert(COLLECTION, record, { suppressAuth: true });
+            counts.inserted += 1;
+        } catch (err) {
+            console.log('insert failed for', item._id, err && err.message);
+        }
+    }
+
+    for (const { item, prev } of toUpdate) {
+        const { gallery, uploadedCount, errorCount } = await resolveGallery(item.listingImageGallery, prev.listingImageGallery);
+        counts.imagesUploaded += uploadedCount;
+        counts.imagesFailed += errorCount;
+        const record = { ...item, listingImageGallery: gallery, listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage };
+        try {
+            await wixData.update(COLLECTION, record, { suppressAuth: true });
+            counts.updated += 1;
+        } catch (err) {
+            console.log('update failed for', item._id, err && err.message);
+        }
+
+        const stale = [];
+        const newSet = new Set(gallery.map(g => g.src));
+        for (const old of (prev.listingImageGallery || [])) {
+            if (old && old.src && !newSet.has(old.src) && !old.src.startsWith('http')) stale.push(old.src);
+        }
+        if (stale.length) await trashMedia(stale);
+    }
+
+    for (const prev of toDelete) {
+        try {
+            await wixData.remove(COLLECTION, prev._id, { suppressAuth: true });
+            counts.deleted += 1;
+            const srcs = mediaSrcsToTrash(prev.listingImageGallery);
+            if (srcs.length) await trashMedia(srcs);
+        } catch (err) {
+            console.log('remove failed for', prev._id, err && err.message);
+        }
+    }
+    return counts;
+}
+
+export async function runSync(mode) {
+    const startedAt = new Date();
+    invalidateVillageCache();
+
+    try {
+        const fetchOpts = mode === 'full'
+            ? { activeOnly: true }
+            : { since: await getLastSuccessfulRunAt(), activeOnly: false };
+
+        const { items, requestCount, expectedCount } = await fetchProperties(fetchOpts);
+        const { upsertRaw, removalIds } = await classify(items);
+        const upserts = upsertRaw.map(({ raw, village }) => transformListing(raw, village));
+
+        const plan = mode === 'full'
+            ? await planFull(upserts)
+            : await planIncremental(upserts, removalIds);
+
+        const writeCounts = await applyWrites(plan);
+
+        const counts = {
+            startedAt,
+            mlsGridRequestCount: requestCount,
+            mlsGridListingCount: expectedCount != null ? expectedCount : items.length,
+            ...writeCounts
+        };
+        await recordRun(mode, 'ok', counts);
+        return { status: 'ok', ...counts };
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        await recordRun(mode, 'error', { startedAt }, msg);
+        throw err;
+    }
+}

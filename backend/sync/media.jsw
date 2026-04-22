@@ -1,0 +1,94 @@
+import { mediaManager } from 'wix-media-backend';
+const dataURLdecoder = require('image-data-uri');
+
+const UPLOAD_FOLDER = '/JeffUploadsNew';
+const MAX_ATTEMPTS = 3;
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function uploadOne(url) {
+    const encoded = await dataURLdecoder.encodeFromURL(url);
+    const bufferInfo = await dataURLdecoder.decode(encoded);
+    const buffer = await bufferInfo.dataBuffer;
+    const fileInfo = await mediaManager.upload(UPLOAD_FOLDER, buffer, url, {
+        mediaOptions: { mimeType: 'image/jpeg', mediaType: 'image' },
+        metadataOptions: { isPrivate: false, isVisitorUpload: false }
+    });
+    return fileInfo.fileUrl;
+}
+
+async function uploadWithRetry(url) {
+    let lastErr;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        try {
+            return await uploadOne(url);
+        } catch (err) {
+            lastErr = err;
+            await wait(500 * (attempt + 1));
+        }
+    }
+    throw lastErr;
+}
+
+function sameTimestamp(a, b) {
+    if (!a || !b) return false;
+    return new Date(a).getTime() === new Date(b).getTime();
+}
+
+function buildExistingIndex(existingGallery) {
+    const index = new Map();
+    if (!Array.isArray(existingGallery)) return index;
+    for (const item of existingGallery) {
+        if (item && item.mlsSourceUrl) index.set(item.mlsSourceUrl, item);
+    }
+    return index;
+}
+
+export async function resolveGallery(incomingGallery, existingGallery) {
+    const existingIndex = buildExistingIndex(existingGallery);
+    const resolved = [];
+    let uploadedCount = 0;
+    let errorCount = 0;
+
+    for (const img of incomingGallery) {
+        const prev = existingIndex.get(img.src);
+        if (prev && sameTimestamp(prev.mlsModificationTimestamp, img.mlsModificationTimestamp) && prev.src && !prev.src.startsWith('http')) {
+            resolved.push({ ...prev, title: img.title, order: img.order });
+            continue;
+        }
+        try {
+            const wixUrl = await uploadWithRetry(img.src);
+            resolved.push({
+                type: 'Image',
+                title: img.title,
+                src: wixUrl,
+                order: img.order,
+                mlsSourceUrl: img.src,
+                mlsModificationTimestamp: img.mlsModificationTimestamp
+            });
+            uploadedCount += 1;
+        } catch (err) {
+            errorCount += 1;
+            console.log('Image upload failed permanently', img.src, err && err.message);
+            if (prev && prev.src) {
+                resolved.push({ ...prev, title: img.title, order: img.order });
+            }
+        }
+    }
+
+    return { gallery: resolved, uploadedCount, errorCount };
+}
+
+export function mediaSrcsToTrash(gallery) {
+    if (!Array.isArray(gallery)) return [];
+    return gallery.filter(i => i && i.type === 'Image' && i.src && !i.src.startsWith('http')).map(i => i.src);
+}
+
+export async function trashMedia(srcs) {
+    if (!srcs.length) return;
+    try {
+        await mediaManager.moveFilesToTrash(srcs);
+    } catch (err) {
+        console.log('trashMedia error', err && err.message);
+    }
+}

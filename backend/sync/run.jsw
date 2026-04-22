@@ -1,0 +1,9 @@
+import { runSync } from 'backend/sync/pipeline';
+
+export function hourlyIncremental() {
+    return runSync('incremental');
+}
+
+export function nightlyFull() {
+    return runSync('full');
+}
