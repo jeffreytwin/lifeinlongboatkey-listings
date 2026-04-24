@@ -1,0 +1,34 @@
+import { mediaManager } from 'wix-media-backend';
+const dataURLdecoder = require('image-data-uri');
+
+// Minimal back-compat shim for any page code still importing from `backend/Fetch`.
+// The real pipeline lives under backend/sync/ - everything else that used to be
+// here (fetchData, getMLSIds, bulkInsertToStaging, checkIfPresent,
+// insertToHousesForSale, removeOldData, updateInsertDate, getNumber, etc.) is
+// intentionally gone: the scheduled job handles all of it now. Drop this file
+// once the Property Management page no longer imports from `backend/Fetch`.
+
+export async function uploadImage(url) {
+    return dataURLdecoder.encodeFromURL(url).then(async (res) => {
+        const bufferInfo = await dataURLdecoder.decode(res);
+        const buffer = await bufferInfo.dataBuffer;
+        return mediaManager.upload('/JeffUploadsNew', buffer, url, {
+            mediaOptions: { mimeType: 'image/jpeg', mediaType: 'image' },
+            metadataOptions: { isPrivate: false, isVisitorUpload: false }
+        }).then(fileInfo => ({
+            type: 'Image',
+            title: '',
+            src: fileInfo.fileUrl
+        }));
+    });
+}
+
+export function myMoveFilesToTrashFunction(fileUrls) {
+    if (!Array.isArray(fileUrls) || !fileUrls.length) return Promise.resolve('done');
+    return mediaManager.moveFilesToTrash(fileUrls)
+        .then(() => 'done')
+        .catch(err => {
+            console.error('myMoveFilesToTrashFunction error', err && err.message);
+            return err;
+        });
+}
