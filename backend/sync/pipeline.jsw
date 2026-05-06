@@ -122,14 +122,14 @@ async function applyWrites({ toInsert, toUpdate, toDelete }) {
     return counts;
 }
 
-export async function runSync(mode) {
+export async function runSync(mode, opts = {}) {
     const startedAt = new Date();
     invalidateVillageCache();
 
     try {
         const fetchOpts = mode === 'full'
             ? { activeOnly: true }
-            : { since: await getLastSuccessfulRunAt(), activeOnly: false };
+            : { since: opts.since || await getLastSuccessfulRunAt(), activeOnly: false };
 
         const { items, requestCount, expectedCount } = await fetchProperties(fetchOpts);
         const { upsertRaw, removalIds } = await classify(items);

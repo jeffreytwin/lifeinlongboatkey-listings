@@ -7,3 +7,9 @@ export function hourlyIncremental() {
 export function nightlyFull() {
     return runSync('full');
 }
+
+export function testIncremental14d() {
+    const since = new Date();
+    since.setDate(since.getDate() - 14);
+    return runSync('incremental', { since });
+}
