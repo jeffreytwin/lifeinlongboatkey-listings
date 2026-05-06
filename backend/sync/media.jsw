@@ -45,12 +45,14 @@ function buildExistingIndex(existingGallery) {
 }
 
 export async function resolveGallery(incomingGallery, existingGallery) {
+    const incoming = Array.isArray(incomingGallery) ? incomingGallery : [];
     const existingIndex = buildExistingIndex(existingGallery);
     const resolved = [];
     let uploadedCount = 0;
     let errorCount = 0;
 
-    for (const img of incomingGallery) {
+    for (const img of incoming) {
+        if (!img || !img.src) continue;
         const prev = existingIndex.get(img.src);
         if (prev && sameTimestamp(prev.mlsModificationTimestamp, img.mlsModificationTimestamp) && prev.src && !prev.src.startsWith('http')) {
             resolved.push({ ...prev, title: img.title, order: img.order });
