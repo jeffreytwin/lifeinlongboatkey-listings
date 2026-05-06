@@ -48,6 +48,18 @@ function buildFilter({ since, activeOnly }) {
     return parts.join(' and ');
 }
 
+export async function hydrateListing(listingId) {
+    if (!listingId) return null;
+    const headers = await authHeader();
+    const filter = encodeURIComponent(
+        `OriginatingSystemName eq '${ORIG_SYSTEM}' and ListingId eq '${listingId}'`
+    );
+    const url = `${BASE}?$filter=${filter}&$expand=${EXPAND}&$top=1`;
+    const page = await fetchWithRetry(url, headers);
+    if (Array.isArray(page.value) && page.value.length) return page.value[0];
+    return null;
+}
+
 export async function fetchProperties({ since = null, activeOnly = false } = {}) {
     const headers = await authHeader();
     const filter = encodeURIComponent(buildFilter({ since, activeOnly }));

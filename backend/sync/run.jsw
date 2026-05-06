@@ -1,4 +1,15 @@
+import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
+import { hydrateListing } from 'backend/sync/mlsgrid';
+import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
+import { transformListing } from 'backend/sync/transform';
+import { resolveGallery } from 'backend/sync/media';
+
+const COLLECTION = 'HousesforSale';
+
+// Replace with any active Longboat Key Stellar MLS ListingId.
+// You can also copy an existing _id out of the HousesforSale collection.
+const DEFAULT_TEST_LISTING_ID = 'A4687694';
 
 export function hourlyIncremental() {
     return runSync('incremental');
@@ -6,4 +17,56 @@ export function hourlyIncremental() {
 
 export function nightlyFull() {
     return runSync('full');
+}
+
+export async function testHydrateAndInsertOne(listingId) {
+    const id = listingId || DEFAULT_TEST_LISTING_ID;
+    console.log('[backend/sync/run.jsw, testHydrateAndInsertOne] called with', id);
+
+    invalidateVillageCache();
+
+    console.log('[test] hydrating', id);
+    const raw = await hydrateListing(id);
+    if (!raw) {
+        console.log('[test] no record returned from hydrate');
+        return { error: 'not found', listingId: id };
+    }
+
+    const village = await matchVillage(raw.SubdivisionName);
+    if (!village) {
+        console.log('[test] no village match for', raw.SubdivisionName);
+        return { error: 'no village match', listingId: id, subdivision: raw.SubdivisionName };
+    }
+
+    const item = transformListing(raw, village);
+    const { gallery, uploadedCount, errorCount } = await resolveGallery(item.listingImageGallery, []);
+    const record = {
+        ...item,
+        listingImageGallery: gallery,
+        listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage
+    };
+
+    const existing = await wixData.get(COLLECTION, id, { suppressAuth: true }).catch(() => null);
+    let action;
+    if (existing) {
+        await wixData.update(COLLECTION, record, { suppressAuth: true });
+        action = 'updated';
+    } else {
+        await wixData.insert(COLLECTION, record, { suppressAuth: true });
+        action = 'inserted';
+    }
+
+    const result = {
+        ok: true,
+        action,
+        listingId: id,
+        subdivision: raw.SubdivisionName,
+        village: village.villageName,
+        price: record.listingPrice,
+        imagesUploaded: uploadedCount,
+        imagesFailed: errorCount,
+        galleryCount: gallery.length
+    };
+    console.log('[backend/sync/run.jsw, testHydrateAndInsertOne] returned with', result);
+    return result;
 }
