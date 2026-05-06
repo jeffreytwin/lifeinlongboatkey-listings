@@ -5,8 +5,10 @@ const BASE = 'https://api.mlsgrid.com/v2/Property';
 const ORIG_SYSTEM = 'mfrmls';
 const POSTAL_CITY = 'Longboat Key';
 const EXPAND = 'Media,Rooms,UnitTypes';
+const SCAN_SELECT = 'ListingId,PostalCity,StandardStatus,ModificationTimestamp';
 const PAGE_SIZE = 200;
 const MAX_RETRIES = 4;
+const HYDRATE_CHUNK_SIZE = 50;
 
 async function authHeader() {
     const token = await getSecret('MLSGRID_API_KEY');
@@ -38,7 +40,7 @@ async function fetchWithRetry(url, headers, attempt = 0) {
     }
 }
 
-function buildFilter({ since, activeOnly }) {
+function buildBaseFilter({ since, activeOnly }) {
     // MLSGrid replication only allows these filter fields: MlgCanView,
     // ModificationTimestamp, OriginatingSystemName, StandardStatus, ListingId,
     // PropertyType, ListOfficeMlsId. PostalCity is filtered client-side below.
@@ -52,30 +54,82 @@ function matchesPostalCity(item) {
     return (item.PostalCity || '').toLowerCase() === POSTAL_CITY.toLowerCase();
 }
 
-export async function fetchProperties({ since = null, activeOnly = false } = {}) {
+// Phase 1: minimal scan to find LBK ListingIds. $select keeps each record
+// tiny (~100 bytes) so paginating across statewide results is cheap.
+async function scanForLbkIds({ since, activeOnly }) {
     const headers = await authHeader();
-    const filter = encodeURIComponent(buildFilter({ since, activeOnly }));
-    let url = `${BASE}?$filter=${filter}&$expand=${EXPAND}&$top=${PAGE_SIZE}&$count=true`;
+    const filter = encodeURIComponent(buildBaseFilter({ since, activeOnly }));
+    const select = encodeURIComponent(SCAN_SELECT);
+    let url = `${BASE}?$filter=${filter}&$select=${select}&$top=${PAGE_SIZE}`;
 
-    const items = [];
+    const matched = [];
     let requestCount = 0;
-    let expectedCount = null;
-    let fetchedCount = 0;
+    let scannedCount = 0;
 
     while (url) {
         const page = await fetchWithRetry(url, headers);
         requestCount += 1;
-        if (expectedCount === null && typeof page['@odata.count'] === 'number') {
-            expectedCount = page['@odata.count'];
-        }
         if (Array.isArray(page.value)) {
-            fetchedCount += page.value.length;
+            scannedCount += page.value.length;
             for (const item of page.value) {
-                if (matchesPostalCity(item)) items.push(item);
+                if (matchesPostalCity(item)) {
+                    matched.push({
+                        ListingId: item.ListingId,
+                        StandardStatus: item.StandardStatus,
+                        ModificationTimestamp: item.ModificationTimestamp
+                    });
+                }
             }
         }
         url = page['@odata.nextLink'] || null;
     }
 
-    return { items, requestCount, expectedCount, fetchedCount };
+    return { matched, requestCount, scannedCount };
+}
+
+// Phase 2: hydrate full records (with Media etc) for the matched IDs.
+// Chunked to keep $filter URL length under typical OData limits.
+async function hydrateByIds(ids) {
+    if (!ids.length) return { items: [], requestCount: 0 };
+    const headers = await authHeader();
+    const items = [];
+    let requestCount = 0;
+
+    for (let i = 0; i < ids.length; i += HYDRATE_CHUNK_SIZE) {
+        const chunk = ids.slice(i, i + HYDRATE_CHUNK_SIZE);
+        const filter = encodeURIComponent(chunk.map(id => `ListingId eq '${id}'`).join(' or '));
+        let url = `${BASE}?$filter=${filter}&$expand=${EXPAND}&$top=${PAGE_SIZE}`;
+        while (url) {
+            const page = await fetchWithRetry(url, headers);
+            requestCount += 1;
+            if (Array.isArray(page.value)) items.push(...page.value);
+            url = page['@odata.nextLink'] || null;
+        }
+    }
+
+    return { items, requestCount };
+}
+
+export async function fetchProperties({ since = null, activeOnly = false } = {}) {
+    const phase1 = await scanForLbkIds({ since, activeOnly });
+
+    const activeIds = [];
+    const nonActiveIds = [];
+    for (const m of phase1.matched) {
+        if ((m.StandardStatus || '').toLowerCase() === 'active') {
+            activeIds.push(m.ListingId);
+        } else {
+            nonActiveIds.push(m.ListingId);
+        }
+    }
+
+    const phase2 = await hydrateByIds(activeIds);
+
+    return {
+        items: phase2.items,
+        nonActiveIds,
+        requestCount: phase1.requestCount + phase2.requestCount,
+        scannedCount: phase1.scannedCount,
+        matchedCount: phase1.matched.length
+    };
 }

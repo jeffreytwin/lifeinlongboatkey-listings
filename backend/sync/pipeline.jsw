@@ -42,21 +42,15 @@ async function getLastSuccessfulRunAt() {
     return fallback;
 }
 
-async function classify(mlsItems) {
+async function classifyByVillage(activeItems) {
     const upsertRaw = [];
-    const removalIds = [];
-    for (const raw of mlsItems) {
+    for (const raw of activeItems) {
         if (!raw || !raw.ListingId) continue;
-        const status = (raw.StandardStatus || '').toLowerCase();
-        if (status === 'active') {
-            const village = await matchVillage(raw.SubdivisionName);
-            if (!village) continue;
-            upsertRaw.push({ raw, village });
-        } else {
-            removalIds.push(raw.ListingId);
-        }
+        const village = await matchVillage(raw.SubdivisionName);
+        if (!village) continue;
+        upsertRaw.push({ raw, village });
     }
-    return { upsertRaw, removalIds };
+    return upsertRaw;
 }
 
 async function applyWrites({ toInsert, toUpdate, toDelete }) {
@@ -117,13 +111,13 @@ export async function runSync(mode) {
             ? { activeOnly: true }
             : { since: await getLastSuccessfulRunAt(), activeOnly: false };
 
-        const { items, requestCount } = await fetchProperties(fetchOpts);
-        const { upsertRaw, removalIds } = await classify(items);
+        const { items, nonActiveIds, requestCount } = await fetchProperties(fetchOpts);
+        const upsertRaw = await classifyByVillage(items);
         const upserts = upsertRaw.map(({ raw, village }) => transformListing(raw, village));
 
         const plan = mode === 'full'
             ? await planFull(upserts)
-            : await planIncremental(upserts, removalIds);
+            : await planIncremental(upserts, nonActiveIds);
 
         const writeCounts = await applyWrites(plan);
 
