@@ -39,13 +39,17 @@ async function fetchWithRetry(url, headers, attempt = 0) {
 }
 
 function buildFilter({ since, activeOnly }) {
-    const parts = [
-        `OriginatingSystemName eq '${ORIG_SYSTEM}'`,
-        `PostalCity eq '${POSTAL_CITY}'`
-    ];
+    // MLSGrid replication only allows these filter fields: MlgCanView,
+    // ModificationTimestamp, OriginatingSystemName, StandardStatus, ListingId,
+    // PropertyType, ListOfficeMlsId. PostalCity is filtered client-side below.
+    const parts = [`OriginatingSystemName eq '${ORIG_SYSTEM}'`];
     if (since) parts.push(`ModificationTimestamp gt ${since.toISOString()}`);
     if (activeOnly) parts.push(`StandardStatus eq 'Active'`);
     return parts.join(' and ');
+}
+
+function matchesPostalCity(item) {
+    return (item.PostalCity || '').toLowerCase() === POSTAL_CITY.toLowerCase();
 }
 
 export async function fetchProperties({ since = null, activeOnly = false } = {}) {
@@ -53,9 +57,10 @@ export async function fetchProperties({ since = null, activeOnly = false } = {})
     const filter = encodeURIComponent(buildFilter({ since, activeOnly }));
     let url = `${BASE}?$filter=${filter}&$expand=${EXPAND}&$top=${PAGE_SIZE}&$count=true`;
 
-    const all = [];
+    const items = [];
     let requestCount = 0;
     let expectedCount = null;
+    let fetchedCount = 0;
 
     while (url) {
         const page = await fetchWithRetry(url, headers);
@@ -63,9 +68,14 @@ export async function fetchProperties({ since = null, activeOnly = false } = {})
         if (expectedCount === null && typeof page['@odata.count'] === 'number') {
             expectedCount = page['@odata.count'];
         }
-        if (Array.isArray(page.value)) all.push(...page.value);
+        if (Array.isArray(page.value)) {
+            fetchedCount += page.value.length;
+            for (const item of page.value) {
+                if (matchesPostalCity(item)) items.push(item);
+            }
+        }
         url = page['@odata.nextLink'] || null;
     }
 
-    return { items: all, requestCount, expectedCount };
+    return { items, requestCount, expectedCount, fetchedCount };
 }

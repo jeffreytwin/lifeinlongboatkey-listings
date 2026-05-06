@@ -117,7 +117,7 @@ export async function runSync(mode) {
             ? { activeOnly: true }
             : { since: await getLastSuccessfulRunAt(), activeOnly: false };
 
-        const { items, requestCount, expectedCount } = await fetchProperties(fetchOpts);
+        const { items, requestCount } = await fetchProperties(fetchOpts);
         const { upsertRaw, removalIds } = await classify(items);
         const upserts = upsertRaw.map(({ raw, village }) => transformListing(raw, village));
 
@@ -130,7 +130,7 @@ export async function runSync(mode) {
         const counts = {
             startedAt,
             mlsGridRequestCount: requestCount,
-            mlsGridListingCount: expectedCount != null ? expectedCount : items.length,
+            mlsGridListingCount: items.length,
             ...writeCounts
         };
         await recordRun(mode, 'ok', counts);
