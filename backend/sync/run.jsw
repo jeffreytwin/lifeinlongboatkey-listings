@@ -1,5 +1,8 @@
 import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
+import { hydrateOne } from 'backend/sync/mlsgrid';
+import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
+import { transformListing } from 'backend/sync/transform';
 
 export function hourlyIncremental() {
     return runSync('incremental');
@@ -13,6 +16,44 @@ export function testIncremental14d() {
     const since = new Date();
     since.setDate(since.getDate() - 14);
     return runSync('incremental', { since });
+}
+
+export async function testHydrateAndInsertOne(listingId = 'MFRA4648957') {
+    invalidateVillageCache();
+    console.log('[test] hydrating', listingId);
+    const raw = await hydrateOne(listingId);
+    if (!raw) {
+        console.log('[test] no record returned from hydrate');
+        return { error: 'not found', listingId };
+    }
+    console.log('[test] raw keyCount', Object.keys(raw).length, 'ListingId', raw.ListingId, 'City', raw.City, 'StreetNumber', raw.StreetNumber, 'StreetName', raw.StreetName, 'StandardStatus', raw.StandardStatus, 'ListPrice', raw.ListPrice, 'SubdivisionName', raw.SubdivisionName, 'mediaCount', Array.isArray(raw.Media) ? raw.Media.length : 'n/a');
+
+    const village = await matchVillage(raw.SubdivisionName);
+    console.log('[test] village match', village ? village.villageName : 'NONE');
+
+    const item = transformListing(raw, village);
+    console.log('[test] transformed keys', Object.keys(item).join(','));
+    console.log('[test] transformed sample', JSON.stringify(item).slice(0, 800));
+
+    try { await wixData.remove('HousesforSale', item._id, { suppressAuth: true }); } catch (e) {}
+    const result = await wixData.insert('HousesforSale', item, { suppressAuth: true });
+    console.log('[test] insert result _id', result && result._id, 'keys', result ? Object.keys(result).join(',') : 'null');
+
+    const fetched = await wixData.get('HousesforSale', item._id, { suppressAuth: true });
+    console.log('[test] fetched propertyAddress', fetched && fetched.propertyAddress);
+    console.log('[test] fetched listingPricePure', fetched && fetched.listingPricePure);
+    console.log('[test] fetched bedrooms', fetched && fetched.bedrooms);
+    console.log('[test] fetched standardStatus', fetched && fetched.standardStatus);
+    console.log('[test] fetched village', fetched && fetched.village);
+    console.log('[test] fetched galleryCount', fetched && Array.isArray(fetched.listingImageGallery) ? fetched.listingImageGallery.length : 'n/a');
+
+    return {
+        listingId: item._id,
+        rawKeyCount: Object.keys(raw).length,
+        transformedKeyCount: Object.keys(item).length,
+        fetchedKeyCount: fetched ? Object.keys(fetched).length : 0,
+        villageMatched: village ? village.villageName : null
+    };
 }
 
 export async function testInsertSynthetic() {

@@ -97,6 +97,12 @@ async function hydrateByIds(ids, headers) {
     return { items, requestCount };
 }
 
+export async function hydrateOne(listingId) {
+    const headers = await authHeader();
+    const { items } = await hydrateByIds([listingId], headers);
+    return items[0] || null;
+}
+
 export async function fetchProperties({ since = null, activeOnly = false } = {}) {
     const headers = await authHeader();
     const { lbk, requestCount: scanRequests, scanTotal } = await scanLbk({ since, activeOnly }, headers);
