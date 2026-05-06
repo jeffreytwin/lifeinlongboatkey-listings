@@ -3,7 +3,7 @@ import { getSecret } from 'wix-secrets-backend';
 
 const BASE = 'https://api.mlsgrid.com/v2/Property';
 const ORIG_SYSTEM = 'mfrmls';
-const POSTAL_CITY = 'Longboat Key';
+const CITY = 'Longboat Key';
 const EXPAND = 'Media,Rooms,UnitTypes';
 const PAGE_SIZE = 200;
 const MAX_RETRIES = 4;
@@ -41,7 +41,7 @@ async function fetchWithRetry(url, headers, attempt = 0) {
 function buildFilter({ since, activeOnly }) {
     const parts = [
         `OriginatingSystemName eq '${ORIG_SYSTEM}'`,
-        `City eq '${POSTAL_CITY}'`
+        `City eq '${CITY}'`
     ];
     if (since) parts.push(`ModificationTimestamp gt ${since.toISOString()}`);
     if (activeOnly) parts.push(`StandardStatus eq 'Active'`);
