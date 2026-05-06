@@ -3,9 +3,18 @@ import wixData from 'wix-data';
 const COLLECTION = 'HousesforSale';
 
 async function fetchExistingByIds(ids) {
-    if (!ids.length) return new Map();
+    const cleanIds = [];
+    const seen = new Set();
+    for (const id of (ids || [])) {
+        if (typeof id !== 'string' && typeof id !== 'number') continue;
+        const key = String(id);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        cleanIds.push(key);
+    }
+    if (!cleanIds.length) return new Map();
     const chunks = [];
-    for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));
+    for (let i = 0; i < cleanIds.length; i += 100) chunks.push(cleanIds.slice(i, i + 100));
     const found = new Map();
     for (const chunk of chunks) {
         const res = await wixData.query(COLLECTION).hasSome('_id', chunk).limit(1000).find({ suppressAuth: true });
