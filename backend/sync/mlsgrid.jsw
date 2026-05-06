@@ -41,7 +41,7 @@ async function fetchWithRetry(url, headers, attempt = 0) {
 function buildFilter({ since, activeOnly }) {
     const parts = [
         `OriginatingSystemName eq '${ORIG_SYSTEM}'`,
-        `PostalCity eq '${POSTAL_CITY}'`
+        `City eq '${POSTAL_CITY}'`
     ];
     if (since) parts.push(`ModificationTimestamp gt ${since.toISOString()}`);
     if (activeOnly) parts.push(`StandardStatus eq 'Active'`);
