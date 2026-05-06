@@ -116,6 +116,12 @@ export async function fetchProperties({ since = null, activeOnly = false } = {})
 
     const items = [...hydrated, ...inactiveLbk];
 
+    console.log('[mlsgrid] scan total', scanTotal, 'lbk matches', lbk.length, 'active', activeLbk.length, 'inactive', inactiveLbk.length, 'hydrated', hydrated.length);
+    if (hydrated[0]) {
+        const sample = hydrated[0];
+        console.log('[mlsgrid] hydrated[0] ListingId', sample.ListingId, 'City', sample.City, 'StreetNumber', sample.StreetNumber, 'StreetName', sample.StreetName, 'ListPrice', sample.ListPrice, 'StandardStatus', sample.StandardStatus, 'mediaCount', Array.isArray(sample.Media) ? sample.Media.length : 'n/a', 'keyCount', Object.keys(sample).length);
+    }
+
     return {
         items,
         requestCount: scanRequests + hydrateRequests,

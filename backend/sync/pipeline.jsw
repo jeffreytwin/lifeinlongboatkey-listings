@@ -62,14 +62,28 @@ async function classify(mlsItems) {
 async function applyWrites({ toInsert, toUpdate, toDelete }) {
     const counts = { inserted: 0, updated: 0, deleted: 0, imagesUploaded: 0, imagesFailed: 0 };
 
+    if (toInsert[0]) {
+        const sample = toInsert[0];
+        console.log('[pipeline] toInsert[0] _id', sample._id, 'propertyAddress', sample.propertyAddress, 'listingPricePure', sample.listingPricePure, 'standardStatus', sample.standardStatus, 'village', sample.village, 'keyCount', Object.keys(sample).length);
+    }
+
+    let firstLogged = false;
     for (const item of toInsert) {
         const { gallery, uploadedCount, errorCount } = await resolveGallery(item.listingImageGallery, []);
         counts.imagesUploaded += uploadedCount;
         counts.imagesFailed += errorCount;
         const record = { ...item, listingImageGallery: gallery, listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage };
+        if (!firstLogged) {
+            firstLogged = true;
+            console.log('[pipeline] inserting record keys', Object.keys(record).join(','));
+            console.log('[pipeline] inserting record sample', JSON.stringify(record).slice(0, 800));
+        }
         try {
-            await wixData.insert(COLLECTION, record, { suppressAuth: true });
+            const result = await wixData.insert(COLLECTION, record, { suppressAuth: true });
             counts.inserted += 1;
+            if (counts.inserted === 1) {
+                console.log('[pipeline] insert result _id', result && result._id, 'keys', result ? Object.keys(result).join(',') : 'null');
+            }
         } catch (err) {
             console.log('insert failed for', item._id, err && err.message);
         }
