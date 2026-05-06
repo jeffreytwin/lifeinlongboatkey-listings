@@ -4,8 +4,10 @@ import { getSecret } from 'wix-secrets-backend';
 const BASE = 'https://api.mlsgrid.com/v2/Property';
 const ORIG_SYSTEM = 'mfrmls';
 const CITY = 'Longboat Key';
-const EXPAND = 'Media,Rooms,UnitTypes';
+const SCAN_SELECT = 'ListingId,City,StandardStatus,ModificationTimestamp';
+const HYDRATE_EXPAND = 'Media,Rooms,UnitTypes';
 const PAGE_SIZE = 200;
+const HYDRATE_BATCH = 50;
 const MAX_RETRIES = 4;
 
 async function authHeader() {
@@ -38,34 +40,86 @@ async function fetchWithRetry(url, headers, attempt = 0) {
     }
 }
 
-function buildFilter({ since, activeOnly }) {
-    const parts = [
-        `OriginatingSystemName eq '${ORIG_SYSTEM}'`,
-        `City eq '${CITY}'`
-    ];
+function buildScanFilter({ since, activeOnly }) {
+    const parts = [`OriginatingSystemName eq '${ORIG_SYSTEM}'`];
     if (since) parts.push(`ModificationTimestamp gt ${since.toISOString()}`);
     if (activeOnly) parts.push(`StandardStatus eq 'Active'`);
     return parts.join(' and ');
 }
 
-export async function fetchProperties({ since = null, activeOnly = false } = {}) {
-    const headers = await authHeader();
-    const filter = encodeURIComponent(buildFilter({ since, activeOnly }));
-    let url = `${BASE}?$filter=${filter}&$expand=${EXPAND}&$top=${PAGE_SIZE}&$count=true`;
+function isLbk(city) {
+    return typeof city === 'string' && city.trim().toLowerCase() === CITY.toLowerCase();
+}
 
-    const all = [];
+async function scanLbk({ since, activeOnly }, headers) {
+    const filter = encodeURIComponent(buildScanFilter({ since, activeOnly }));
+    const select = encodeURIComponent(SCAN_SELECT);
+    let url = `${BASE}?$filter=${filter}&$select=${select}&$top=${PAGE_SIZE}&$count=true`;
+
+    const lbk = [];
     let requestCount = 0;
-    let expectedCount = null;
+    let scanTotal = null;
 
     while (url) {
         const page = await fetchWithRetry(url, headers);
         requestCount += 1;
-        if (expectedCount === null && typeof page['@odata.count'] === 'number') {
-            expectedCount = page['@odata.count'];
+        if (scanTotal === null && typeof page['@odata.count'] === 'number') {
+            scanTotal = page['@odata.count'];
         }
-        if (Array.isArray(page.value)) all.push(...page.value);
+        if (Array.isArray(page.value)) {
+            for (const item of page.value) {
+                if (isLbk(item.City)) lbk.push(item);
+            }
+        }
         url = page['@odata.nextLink'] || null;
     }
 
-    return { items: all, requestCount, expectedCount };
+    return { lbk, requestCount, scanTotal };
+}
+
+async function hydrateByIds(ids, headers) {
+    const expand = encodeURIComponent(HYDRATE_EXPAND);
+    const items = [];
+    let requestCount = 0;
+
+    for (let i = 0; i < ids.length; i += HYDRATE_BATCH) {
+        const chunk = ids.slice(i, i + HYDRATE_BATCH);
+        const filter = encodeURIComponent(chunk.map(id => `ListingId eq '${id}'`).join(' or '));
+        let url = `${BASE}?$filter=${filter}&$expand=${expand}&$top=${PAGE_SIZE}`;
+        while (url) {
+            const page = await fetchWithRetry(url, headers);
+            requestCount += 1;
+            if (Array.isArray(page.value)) items.push(...page.value);
+            url = page['@odata.nextLink'] || null;
+        }
+    }
+
+    return { items, requestCount };
+}
+
+export async function fetchProperties({ since = null, activeOnly = false } = {}) {
+    const headers = await authHeader();
+    const { lbk, requestCount: scanRequests, scanTotal } = await scanLbk({ since, activeOnly }, headers);
+
+    const activeLbk = [];
+    const inactiveLbk = [];
+    for (const item of lbk) {
+        const status = (item.StandardStatus || '').toLowerCase();
+        if (status === 'active') activeLbk.push(item);
+        else inactiveLbk.push(item);
+    }
+
+    const activeIds = activeLbk.map(s => s.ListingId).filter(Boolean);
+    const { items: hydrated, requestCount: hydrateRequests } = activeIds.length
+        ? await hydrateByIds(activeIds, headers)
+        : { items: [], requestCount: 0 };
+
+    const items = [...hydrated, ...inactiveLbk];
+
+    return {
+        items,
+        requestCount: scanRequests + hydrateRequests,
+        expectedCount: items.length,
+        scanTotal
+    };
 }
