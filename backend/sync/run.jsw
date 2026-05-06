@@ -1,3 +1,4 @@
+import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
 
 export function hourlyIncremental() {
@@ -12,4 +13,65 @@ export function testIncremental14d() {
     const since = new Date();
     since.setDate(since.getDate() - 14);
     return runSync('incremental', { since });
+}
+
+export async function testInsertSynthetic() {
+    const record = {
+        _id: 'TEST_SYNTHETIC_001',
+        propertyAddress: '123 Test Beach Rd, Longboat Key, FL 34228',
+        propertyAddressGoogleMaps: {
+            city: 'Longboat Key',
+            location: { latitude: 27.4, longitude: -82.65 },
+            streetAddress: { number: '123', name: 'Test Beach Rd' },
+            country: 'US',
+            postalCode: '34228',
+            formatted: '123 Test Beach Rd, Longboat Key, FL 34228, US',
+            subdivision: 'TEST SUBDIVISION'
+        },
+        listingPrimaryImage: 'https://via.placeholder.com/400',
+        listingPrice: '$1,500,000',
+        listingPricePure: 1500000,
+        listingPriceSort: ['1M+'],
+        homeType: 'Condominium',
+        village: 'Aria',
+        village1: '4553118b-50a7-40f6-b9f6-cb312f6c076c',
+        villageLink: 'https://www.lifeinlongboatkey.com/neighborhood/aria',
+        villageSortHelp: 'Aria',
+        blueTag1: '',
+        purpleTag1: '',
+        greenTag1: '',
+        bedrooms: 3,
+        listingAgentName: 'Test Agent',
+        listingAgentMls: 'TEST123',
+        listingAgentPhone: '555-1234',
+        listingAgentCompany: 'Test Realty',
+        listingBrokerageContactInformation: 'test@test.com',
+        bathrooms: 2,
+        bathroomsSort: ['2'],
+        garages: '1 Car',
+        squareFeet: '1,500',
+        propertyDescription: 'Test description.',
+        listingImageGallery: [{ type: 'Image', title: 'test', src: 'https://via.placeholder.com/400', order: 0 }],
+        standardStatus: 'Active',
+        mlgCanView: 'true',
+        virtualTourUrl: null,
+        modificationTimestamp: new Date(),
+        subdivision: 'TEST SUBDIVISION',
+        dateOfMlsPull: new Date()
+    };
+    console.log('[test] inserting synthetic with keys:', Object.keys(record).join(','));
+    try {
+        await wixData.remove('HousesforSale', record._id, { suppressAuth: true });
+    } catch (e) {}
+    const result = await wixData.insert('HousesforSale', record, { suppressAuth: true });
+    console.log('[test] insert result _id:', result && result._id);
+    console.log('[test] insert result keys:', result ? Object.keys(result).join(',') : 'null');
+    const fetched = await wixData.get('HousesforSale', record._id, { suppressAuth: true });
+    console.log('[test] fetched keys:', fetched ? Object.keys(fetched).join(',') : 'null');
+    console.log('[test] fetched propertyAddress:', fetched && fetched.propertyAddress);
+    console.log('[test] fetched listingPricePure:', fetched && fetched.listingPricePure);
+    console.log('[test] fetched bedrooms:', fetched && fetched.bedrooms);
+    console.log('[test] fetched standardStatus:', fetched && fetched.standardStatus);
+    console.log('[test] fetched dateOfMlsPull:', fetched && fetched.dateOfMlsPull);
+    return { inserted: result && result._id, fetchedKeyCount: fetched ? Object.keys(fetched).length : 0 };
 }
