@@ -3,7 +3,13 @@ import { getSecret } from 'wix-secrets-backend';
 
 const BASE = 'https://api.mlsgrid.com/v2/Property';
 const ORIG_SYSTEM = 'mfrmls';
+const LISTING_ID_PREFIX = 'MFR';
 const POSTAL_CITY = 'Longboat Key';
+
+function normalizeListingId(listingId) {
+    if (!listingId) return listingId;
+    return listingId.startsWith(LISTING_ID_PREFIX) ? listingId : `${LISTING_ID_PREFIX}${listingId}`;
+}
 const EXPAND = 'Media,Rooms,UnitTypes';
 const PAGE_SIZE = 200;
 const MAX_RETRIES = 4;
@@ -40,12 +46,83 @@ async function fetchWithRetry(url, headers, attempt = 0) {
 
 function buildFilter({ since, activeOnly }) {
     const parts = [
-        `OriginatingSystemName eq '${ORIG_SYSTEM}'`,
-        `PostalCity eq '${POSTAL_CITY}'`
+        `OriginatingSystemName eq '${ORIG_SYSTEM}'`
     ];
+    // PostalCity is intentionally not filtered server-side. MLSGrid replication
+    // queries restrict the allowed filter fields and PostalCity isn't on the
+    // permitted list, so we filter geographically client-side in pipeline.
     if (since) parts.push(`ModificationTimestamp gt ${since.toISOString()}`);
     if (activeOnly) parts.push(`StandardStatus eq 'Active'`);
     return parts.join(' and ');
+}
+
+export async function peekFeed(top = 5) {
+    const headers = await authHeader();
+    const probes = [
+        `OriginatingSystemName eq '${ORIG_SYSTEM}'`,
+        null
+    ];
+    const out = [];
+    for (const f of probes) {
+        const filter = f ? `&$filter=${encodeURIComponent(f)}` : '';
+        const url = `${BASE}?$top=${top}&$count=true${filter}`;
+        try {
+            const page = await fetchWithRetry(url, headers);
+            const samples = (page.value || []).map(v => ({
+                ListingId: v.ListingId,
+                OriginatingSystemName: v.OriginatingSystemName,
+                StandardStatus: v.StandardStatus,
+                PostalCity: v.PostalCity,
+                StateOrProvince: v.StateOrProvince
+            }));
+            out.push({ probe: f || '(no filter)', count: page['@odata.count'], got: samples.length, samples });
+        } catch (err) {
+            out.push({ probe: f || '(no filter)', error: err && err.message });
+        }
+    }
+    return out;
+}
+
+export async function debugHydrate(listingId) {
+    const headers = await authHeader();
+    const normalized = normalizeListingId(listingId);
+    const filters = [
+        `ListingId eq '${normalized}' and OriginatingSystemName eq '${ORIG_SYSTEM}'`,
+        `ListingId eq '${normalized}'`,
+        `ListingId eq '${listingId}'`
+    ];
+    const results = [];
+    for (const f of filters) {
+        const url = `${BASE}?$filter=${encodeURIComponent(f)}&$top=1&$count=true`;
+        try {
+            const page = await fetchWithRetry(url, headers);
+            const sample = page.value && page.value[0] ? {
+                ListingId: page.value[0].ListingId,
+                ListingKey: page.value[0].ListingKey,
+                OriginatingSystemName: page.value[0].OriginatingSystemName,
+                StandardStatus: page.value[0].StandardStatus,
+                PostalCity: page.value[0].PostalCity,
+                SubdivisionName: page.value[0].SubdivisionName
+            } : null;
+            results.push({ filter: f, count: page['@odata.count'], got: (page.value || []).length, sample });
+        } catch (err) {
+            results.push({ filter: f, error: err && err.message });
+        }
+    }
+    return results;
+}
+
+export async function hydrateListing(listingId) {
+    if (!listingId) return null;
+    const normalized = normalizeListingId(listingId);
+    const headers = await authHeader();
+    const filter = encodeURIComponent(
+        `OriginatingSystemName eq '${ORIG_SYSTEM}' and ListingId eq '${normalized}'`
+    );
+    const url = `${BASE}?$filter=${filter}&$expand=${EXPAND}&$top=1`;
+    const page = await fetchWithRetry(url, headers);
+    if (Array.isArray(page.value) && page.value.length) return page.value[0];
+    return null;
 }
 
 export async function fetchProperties({ since = null, activeOnly = false } = {}) {

@@ -1,12 +1,109 @@
 import wixData from 'wix-data';
 import { fetchProperties } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
-import { transformListing } from 'backend/sync/transform';
 import { planIncremental, planFull } from 'backend/sync/diff';
-import { resolveGallery, mediaSrcsToTrash, trashMedia } from 'backend/sync/media';
 
 const COLLECTION = 'HousesforSale';
 const RUNS = 'SyncRuns';
+const POSTAL_CITY = 'longboat key';
+
+// Inlined transform. Wix's module cache for a separate transform.jsw kept
+// returning an empty stub even when the source was correct, so the function
+// lives here next to its only consumer.
+
+function titleCase(s) {
+    if (!s) return '';
+    return String(s).toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function formatPrice(n) {
+    if (typeof n !== 'number') return n;
+    return `$${n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+}
+
+function priceBucket(n) {
+    if (typeof n !== 'number') return String(n);
+    const s = n.toString();
+    if (s.length === 6) return `$${s.slice(0, 1)}00s`;
+    if (s.length >= 7 && s.length <= 9) {
+        const head = s.length === 7 ? s.slice(0, 1) : s.length === 8 ? s.slice(0, 2) : s.slice(0, 3);
+        return `${head}M+`;
+    }
+    return `$${s}`;
+}
+
+function formatSquareFeet(v) {
+    if (v === undefined || v === null) return '0';
+    return v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function buildAddress(data) {
+    const street = [data.StreetNumber, titleCase(data.StreetName), titleCase(data.StreetSuffix)].filter(Boolean).join(' ');
+    const propertyAdd = `${street}, ${titleCase(data.City)}, ${data.StateOrProvince} ${data.PostalCode}`;
+    const addressObject = {
+        city: data.City,
+        location: { latitude: data.Latitude, longitude: data.Longitude },
+        streetAddress: { number: data.StreetNumber, name: titleCase(data.StreetName) },
+        country: data.Country,
+        postalCode: data.PostalCode,
+        formatted: `${propertyAdd}, ${data.Country}`,
+        subdivision: data.SubdivisionName
+    };
+    return { propertyAdd, addressObject };
+}
+
+function rawGallery(media) {
+    if (!Array.isArray(media)) return [];
+    return [...media].sort((a, b) => (a.Order || 0) - (b.Order || 0)).map(m => ({
+        type: 'Image',
+        title: m.LongDescription || '',
+        src: m.MediaURL,
+        order: m.Order,
+        mlsModificationTimestamp: m.MediaModificationTimestamp || m.ModificationTimestamp || null
+    }));
+}
+
+export function transformListing(data, village) {
+    const { propertyAdd, addressObject } = buildAddress(data);
+    const gallery = rawGallery(data.Media);
+    const primary = gallery.length ? gallery[0].src : null;
+
+    return {
+        _id: data.ListingId,
+        propertyAddress: propertyAdd,
+        propertyAddressGoogleMaps: addressObject,
+        listingPrimaryImage: primary,
+        listingPrice: typeof data.ListPrice === 'number' ? formatPrice(data.ListPrice) : data.ListPrice,
+        listingPricePure: data.ListPrice,
+        listingPriceSort: [priceBucket(data.ListPrice)],
+        homeType: data.PropertySubType,
+        village: village ? village.villageName : null,
+        village1: village ? village.village1 : null,
+        villageLink: village ? village.villageURL : null,
+        villageSortHelp: village ? village.villageSortHelp : null,
+        blueTag1: village ? village.blueTag1 : '',
+        purpleTag1: village ? village.purpleTag1 : '',
+        greenTag1: village ? village.greenTag1 : '',
+        bedrooms: data.BedroomsTotal,
+        listingAgentName: data.ListAgentFullName,
+        listingAgentMls: data.ListAgentMlsId,
+        listingAgentPhone: data.ListAgentDirectPhone,
+        listingAgentCompany: data.ListOfficeName,
+        listingBrokerageContactInformation: data.MFR_AttributionContact,
+        bathrooms: data.BathroomsTotalInteger,
+        bathroomsSort: [Math.ceil(data.BathroomsTotalInteger || 0).toString()],
+        garages: `${data.GarageSpaces == null ? 0 : data.GarageSpaces} Car`,
+        squareFeet: formatSquareFeet(data.LivingArea),
+        propertyDescription: data.PublicRemarks,
+        listingImageGallery: gallery,
+        standardStatus: data.StandardStatus,
+        mlgCanView: data.MlgCanView != null ? data.MlgCanView.toString() : null,
+        virtualTourUrl: data.VirtualTourURLUnbranded,
+        modificationTimestamp: data.ModificationTimestamp ? new Date(data.ModificationTimestamp) : null,
+        subdivision: data.SubdivisionName ? data.SubdivisionName.replace('SAVANNAH', 'SAVANNA') : null,
+        dateOfMlsPull: new Date()
+    };
+}
 
 async function recordRun(mode, status, counts, errorMessage) {
     const row = {
@@ -17,8 +114,6 @@ async function recordRun(mode, status, counts, errorMessage) {
         inserted: counts.inserted || 0,
         updated: counts.updated || 0,
         deleted: counts.deleted || 0,
-        imagesUploaded: counts.imagesUploaded || 0,
-        imagesFailed: counts.imagesFailed || 0,
         mlsGridRequestCount: counts.mlsGridRequestCount || 0,
         mlsGridListingCount: counts.mlsGridListingCount || 0,
         errorMessage: errorMessage || null
@@ -47,6 +142,10 @@ async function classify(mlsItems) {
     const removalIds = [];
     for (const raw of mlsItems) {
         if (!raw || !raw.ListingId) continue;
+        // PostalCity is filtered client-side: MLSGrid replication queries
+        // restrict allowed filter fields and PostalCity isn't permitted, so the
+        // bulk fetch returns the whole mfrmls feed and we trim here.
+        if ((raw.PostalCity || '').toLowerCase() !== POSTAL_CITY) continue;
         const status = (raw.StandardStatus || '').toLowerCase();
         if (status === 'active') {
             const village = await matchVillage(raw.SubdivisionName);
@@ -60,52 +159,71 @@ async function classify(mlsItems) {
 }
 
 async function applyWrites({ toInsert, toUpdate, toDelete }) {
-    const counts = { inserted: 0, updated: 0, deleted: 0, imagesUploaded: 0, imagesFailed: 0 };
+    const counts = { inserted: 0, updated: 0, deleted: 0 };
 
+    // Photos are stored as raw MLSGrid https URLs; processMediaQueueStep
+    // swaps them for Wix media URLs over many small invocations so the data
+    // path doesn't compete with media uploads for the backend timeout.
     for (const item of toInsert) {
-        const { gallery, uploadedCount, errorCount } = await resolveGallery(item.listingImageGallery, []);
-        counts.imagesUploaded += uploadedCount;
-        counts.imagesFailed += errorCount;
-        const record = { ...item, listingImageGallery: gallery, listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage };
         try {
-            await wixData.insert(COLLECTION, record, { suppressAuth: true });
+            await wixData.insert(COLLECTION, item, { suppressAuth: true });
             counts.inserted += 1;
         } catch (err) {
             console.log('insert failed for', item._id, err && err.message);
         }
     }
 
+    // For updates, merge incoming MLS photo URLs with what's already on the
+    // row: if a photo with the same MLS source URL is already uploaded to Wix
+    // and its MLS modification timestamp matches, keep the wix:image:// src so
+    // the queue worker doesn't have to re-upload it next pass.
     for (const { item, prev } of toUpdate) {
-        const { gallery, uploadedCount, errorCount } = await resolveGallery(item.listingImageGallery, prev.listingImageGallery);
-        counts.imagesUploaded += uploadedCount;
-        counts.imagesFailed += errorCount;
-        const record = { ...item, listingImageGallery: gallery, listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage };
+        const merged = mergeGallery(item.listingImageGallery, prev && prev.listingImageGallery);
+        const firstWixSrc = merged.find(g => g && g.src && !g.src.startsWith('http'));
+        const record = {
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
+        };
         try {
             await wixData.update(COLLECTION, record, { suppressAuth: true });
             counts.updated += 1;
         } catch (err) {
             console.log('update failed for', item._id, err && err.message);
         }
-
-        const stale = [];
-        const newSet = new Set(gallery.map(g => g.src));
-        for (const old of (prev.listingImageGallery || [])) {
-            if (old && old.src && !newSet.has(old.src) && !old.src.startsWith('http')) stale.push(old.src);
-        }
-        if (stale.length) await trashMedia(stale);
     }
 
     for (const prev of toDelete) {
         try {
             await wixData.remove(COLLECTION, prev._id, { suppressAuth: true });
             counts.deleted += 1;
-            const srcs = mediaSrcsToTrash(prev.listingImageGallery);
-            if (srcs.length) await trashMedia(srcs);
         } catch (err) {
             console.log('remove failed for', prev._id, err && err.message);
         }
     }
     return counts;
+}
+
+function sameTimestamp(a, b) {
+    if (!a || !b) return false;
+    return new Date(a).getTime() === new Date(b).getTime();
+}
+
+export function mergeGallery(incoming, existing) {
+    if (!Array.isArray(incoming)) return [];
+    if (!Array.isArray(existing) || !existing.length) return incoming;
+    const byMlsUrl = new Map();
+    for (const e of existing) {
+        const key = e && (e.mlsSourceUrl || (typeof e.src === 'string' && e.src.startsWith('http') ? e.src : null));
+        if (key) byMlsUrl.set(key, e);
+    }
+    return incoming.map(inc => {
+        const prev = byMlsUrl.get(inc.src);
+        if (prev && prev.src && !prev.src.startsWith('http') && sameTimestamp(prev.mlsModificationTimestamp, inc.mlsModificationTimestamp)) {
+            return { ...inc, src: prev.src, mlsSourceUrl: inc.src };
+        }
+        return inc;
+    });
 }
 
 export async function runSync(mode) {

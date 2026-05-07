@@ -27,8 +27,5 @@ export async function matchVillage(subdivisionName) {
     const villages = await loadVillages();
     const needle = (subdivisionName || '').toLowerCase();
     if (!needle) return null;
-    // villages are sorted by order desc; the highest-order match wins, reproducing
-    // the original page-code behavior where later if-blocks overwrote earlier ones.
     return villages.find(v => needle.includes(v.matchPattern)) || null;
 }
-
