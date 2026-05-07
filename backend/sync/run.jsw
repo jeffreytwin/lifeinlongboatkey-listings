@@ -1,5 +1,5 @@
 import wixData from 'wix-data';
-import { runSync, transformListing, mergeGallery } from 'backend/sync/pipeline';
+import { runSync, transformListing, resolveGalleryInline } from 'backend/sync/pipeline';
 import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { processMediaQueueStep } from 'backend/sync/media';
@@ -7,6 +7,7 @@ import { processMediaQueueStep } from 'backend/sync/media';
 const COLLECTION = 'HousesforSale';
 
 const DEFAULT_TEST_LISTING_ID = 'A4672059';
+const TEST_DEADLINE_MS = 60 * 60 * 1000;
 
 export function hourlyIncremental() {
     return runSync('incremental');
@@ -33,6 +34,11 @@ export async function testDebugHydrate(listingId) {
     return results;
 }
 
+// Fully resolves a single MLSGrid listing (text + photo uploads) and upserts
+// it into HousesforSale. Mirrors the production sync path for one listing,
+// useful for validating the end-to-end pipeline against a known ListingId.
+// Note: with many photos this will exceed the 14s test-panel timeout (504),
+// but the work continues and completes server-side.
 export async function testHydrateAndInsertOne(listingId) {
     const id = listingId || DEFAULT_TEST_LISTING_ID;
     invalidateVillageCache();
@@ -43,29 +49,31 @@ export async function testHydrateAndInsertOne(listingId) {
     const village = await matchVillage(raw.SubdivisionName);
     if (!village) return { error: 'no village match', listingId: id, subdivision: raw.SubdivisionName };
 
-    // transformListing and mergeGallery are exported from pipeline.jsw and
-    // imported here. Wix wraps every exported .jsw function in a web-method
-    // proxy that returns a Promise when called across module boundaries, so
-    // these awaits are required even though the source functions are sync.
+    // transformListing and resolveGalleryInline are exported from pipeline.jsw.
+    // Wix wraps every exported .jsw function in a web-method proxy returning a
+    // Promise when called across module boundaries, so the awaits below are
+    // required even though transformListing is sync at the source.
     const item = await transformListing(raw, village);
-
     const existing = await wixData.get(COLLECTION, item._id, { suppressAuth: true }).catch(() => null);
+    const prevGallery = existing && existing.listingImageGallery;
 
-    let record = item;
+    const deadline = Date.now() + TEST_DEADLINE_MS;
+    const { gallery, uploadedCount, failedCount } = await resolveGalleryInline(
+        item.listingImageGallery, prevGallery, deadline
+    );
+    const firstWixSrc = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+    const record = {
+        ...item,
+        listingImageGallery: gallery,
+        listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
+    };
+
     if (existing) {
-        const merged = await mergeGallery(item.listingImageGallery, existing.listingImageGallery);
-        const firstWixSrc = merged.find(g => g && g.src && !g.src.startsWith('http'));
-        record = {
-            ...item,
-            listingImageGallery: merged,
-            listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
-        };
         await wixData.update(COLLECTION, record, { suppressAuth: true });
     } else {
         await wixData.insert(COLLECTION, record, { suppressAuth: true });
     }
 
-    const persisted = await wixData.get(COLLECTION, record._id, { suppressAuth: true }).catch(() => null);
     return {
         ok: true,
         action: existing ? 'updated' : 'inserted',
@@ -74,8 +82,10 @@ export async function testHydrateAndInsertOne(listingId) {
         subdivision: raw.SubdivisionName,
         village: village.villageName,
         price: record.listingPrice,
-        gallerySize: persisted && Array.isArray(persisted.listingImageGallery) ? persisted.listingImageGallery.length : 0,
-        firstGallerySrc: persisted && persisted.listingImageGallery && persisted.listingImageGallery[0] ? persisted.listingImageGallery[0].src : null
+        gallerySize: gallery.length,
+        imagesUploaded: uploadedCount,
+        imagesFailed: failedCount,
+        firstGallerySrc: gallery[0] ? gallery[0].src : null
     };
 }
 

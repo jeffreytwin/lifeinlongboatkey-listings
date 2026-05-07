@@ -2,10 +2,12 @@ import wixData from 'wix-data';
 import { fetchProperties } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { planIncremental, planFull } from 'backend/sync/diff';
+import { uploadWithRetry, trashMedia } from 'backend/sync/media';
 
 const COLLECTION = 'HousesforSale';
 const RUNS = 'SyncRuns';
 const POSTAL_CITY = 'longboat key';
+const SOFT_DEADLINE_MS = 60 * 60 * 1000;
 
 // Inlined transform. Wix's module cache for a separate transform.jsw kept
 // returning an empty stub even when the source was correct, so the function
@@ -114,6 +116,9 @@ async function recordRun(mode, status, counts, errorMessage) {
         inserted: counts.inserted || 0,
         updated: counts.updated || 0,
         deleted: counts.deleted || 0,
+        imagesUploaded: counts.imagesUploaded || 0,
+        imagesFailed: counts.imagesFailed || 0,
+        imagesTrashed: counts.imagesTrashed || 0,
         mlsGridRequestCount: counts.mlsGridRequestCount || 0,
         mlsGridListingCount: counts.mlsGridListingCount || 0,
         errorMessage: errorMessage || null
@@ -158,52 +163,6 @@ async function classify(mlsItems) {
     return { upsertRaw, removalIds };
 }
 
-async function applyWrites({ toInsert, toUpdate, toDelete }) {
-    const counts = { inserted: 0, updated: 0, deleted: 0 };
-
-    // Photos are stored as raw MLSGrid https URLs; processMediaQueueStep
-    // swaps them for Wix media URLs over many small invocations so the data
-    // path doesn't compete with media uploads for the backend timeout.
-    for (const item of toInsert) {
-        try {
-            await wixData.insert(COLLECTION, item, { suppressAuth: true });
-            counts.inserted += 1;
-        } catch (err) {
-            console.log('insert failed for', item._id, err && err.message);
-        }
-    }
-
-    // For updates, merge incoming MLS photo URLs with what's already on the
-    // row: if a photo with the same MLS source URL is already uploaded to Wix
-    // and its MLS modification timestamp matches, keep the wix:image:// src so
-    // the queue worker doesn't have to re-upload it next pass.
-    for (const { item, prev } of toUpdate) {
-        const merged = mergeGallery(item.listingImageGallery, prev && prev.listingImageGallery);
-        const firstWixSrc = merged.find(g => g && g.src && !g.src.startsWith('http'));
-        const record = {
-            ...item,
-            listingImageGallery: merged,
-            listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
-        };
-        try {
-            await wixData.update(COLLECTION, record, { suppressAuth: true });
-            counts.updated += 1;
-        } catch (err) {
-            console.log('update failed for', item._id, err && err.message);
-        }
-    }
-
-    for (const prev of toDelete) {
-        try {
-            await wixData.remove(COLLECTION, prev._id, { suppressAuth: true });
-            counts.deleted += 1;
-        } catch (err) {
-            console.log('remove failed for', prev._id, err && err.message);
-        }
-    }
-    return counts;
-}
-
 function sameTimestamp(a, b) {
     if (!a || !b) return false;
     return new Date(a).getTime() === new Date(b).getTime();
@@ -226,8 +185,118 @@ export function mergeGallery(incoming, existing) {
     });
 }
 
+// Resolve a listing's gallery to fully-uploaded form: keep wix:image:// items
+// from the previous version when their MLS source URL and modification
+// timestamp match (mergeGallery), then upload any remaining raw https items.
+// Stops uploading once Date.now() crosses the deadline; remaining items stay
+// as raw https in the returned gallery and will be picked up on the next run.
+export async function resolveGalleryInline(incoming, existing, deadline) {
+    const merged = mergeGallery(incoming, existing);
+    let uploadedCount = 0;
+    let failedCount = 0;
+    if (!Array.isArray(merged)) return { gallery: [], uploadedCount, failedCount };
+
+    for (let i = 0; i < merged.length; i++) {
+        const item = merged[i];
+        if (!item || typeof item.src !== 'string' || !item.src.startsWith('http')) continue;
+        if (deadline && Date.now() >= deadline) break;
+        const mlsUrl = item.src;
+        try {
+            const wixUrl = await uploadWithRetry(mlsUrl);
+            merged[i] = { ...item, src: wixUrl, mlsSourceUrl: mlsUrl };
+            uploadedCount += 1;
+        } catch (err) {
+            console.log('inline upload failed', mlsUrl, err && err.message);
+            failedCount += 1;
+        }
+    }
+    return { gallery: merged, uploadedCount, failedCount };
+}
+
+function galleryWixSrcs(gallery) {
+    if (!Array.isArray(gallery)) return [];
+    return gallery
+        .filter(i => i && typeof i.src === 'string' && !i.src.startsWith('http'))
+        .map(i => i.src);
+}
+
+function findOrphanedSrcs(prevGallery, nextGallery) {
+    const nextSet = new Set(galleryWixSrcs(nextGallery));
+    return galleryWixSrcs(prevGallery).filter(src => !nextSet.has(src));
+}
+
+async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
+    const counts = {
+        inserted: 0, updated: 0, deleted: 0,
+        imagesUploaded: 0, imagesFailed: 0, imagesTrashed: 0
+    };
+
+    for (const item of toInsert) {
+        const { gallery, uploadedCount, failedCount } = await resolveGalleryInline(
+            item.listingImageGallery, [], deadline
+        );
+        counts.imagesUploaded += uploadedCount;
+        counts.imagesFailed += failedCount;
+        const firstWix = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+        const record = {
+            ...item,
+            listingImageGallery: gallery,
+            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage
+        };
+        try {
+            await wixData.insert(COLLECTION, record, { suppressAuth: true });
+            counts.inserted += 1;
+        } catch (err) {
+            console.log('insert failed for', item._id, err && err.message);
+        }
+    }
+
+    for (const { item, prev } of toUpdate) {
+        const prevGallery = prev && prev.listingImageGallery;
+        const { gallery, uploadedCount, failedCount } = await resolveGalleryInline(
+            item.listingImageGallery, prevGallery, deadline
+        );
+        counts.imagesUploaded += uploadedCount;
+        counts.imagesFailed += failedCount;
+        const firstWix = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+        const record = {
+            ...item,
+            listingImageGallery: gallery,
+            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage
+        };
+        try {
+            await wixData.update(COLLECTION, record, { suppressAuth: true });
+            counts.updated += 1;
+        } catch (err) {
+            console.log('update failed for', item._id, err && err.message);
+        }
+
+        const orphaned = findOrphanedSrcs(prevGallery, gallery);
+        if (orphaned.length) {
+            await trashMedia(orphaned);
+            counts.imagesTrashed += orphaned.length;
+        }
+    }
+
+    for (const prev of toDelete) {
+        const wixSrcs = galleryWixSrcs(prev.listingImageGallery);
+        try {
+            await wixData.remove(COLLECTION, prev._id, { suppressAuth: true });
+            counts.deleted += 1;
+        } catch (err) {
+            console.log('remove failed for', prev._id, err && err.message);
+        }
+        if (wixSrcs.length) {
+            await trashMedia(wixSrcs);
+            counts.imagesTrashed += wixSrcs.length;
+        }
+    }
+    return counts;
+}
+
 export async function runSync(mode) {
     const startedAt = new Date();
+    const deadline = Date.now() + SOFT_DEADLINE_MS;
     invalidateVillageCache();
 
     try {
@@ -243,7 +312,7 @@ export async function runSync(mode) {
             ? await planFull(upserts)
             : await planIncremental(upserts, removalIds);
 
-        const writeCounts = await applyWrites(plan);
+        const writeCounts = await applyWrites(plan, deadline);
 
         const counts = {
             startedAt,

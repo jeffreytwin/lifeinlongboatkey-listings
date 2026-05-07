@@ -5,8 +5,8 @@ const dataURLdecoder = require('image-data-uri');
 const COLLECTION = 'HousesforSale';
 const UPLOAD_FOLDER = '/JeffUploadsNew';
 const MAX_ATTEMPTS = 3;
-const QUEUE_SCAN_LIMIT = 50;
-const PHOTOS_PER_STEP = 5;
+const QUEUE_SCAN_LIMIT = 200;
+const DEFAULT_DEADLINE_MS = 60 * 60 * 1000;
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -21,7 +21,7 @@ async function uploadOne(url) {
     return fileInfo.fileUrl;
 }
 
-async function uploadWithRetry(url) {
+export async function uploadWithRetry(url) {
     let lastErr;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         try {
@@ -43,47 +43,60 @@ function findPendingIndex(gallery) {
     return gallery.findIndex(isPendingItem);
 }
 
-export async function processMediaQueueStep() {
+async function findNextRowWithPending() {
     const res = await wixData.query(COLLECTION)
         .descending('_createdDate')
         .limit(QUEUE_SCAN_LIMIT)
         .find({ suppressAuth: true });
+    return res.items.find(row => findPendingIndex(row.listingImageGallery) >= 0) || null;
+}
 
-    const target = res.items.find(row => findPendingIndex(row.listingImageGallery) >= 0);
-    if (!target) return { processed: 0, failed: 0, listingId: null, message: 'no pending media' };
+// Backstop drainer for galleries left with raw https:// items because a sync
+// run was killed mid-listing. Steady state never has pending items because
+// applyWrites resolves galleries inline. This function loops across rows
+// until the deadline is reached or no pending media remain.
+export async function processMediaQueueStep(deadline) {
+    const effectiveDeadline = deadline || (Date.now() + DEFAULT_DEADLINE_MS);
+    let totalProcessed = 0;
+    let totalFailed = 0;
+    let lastListingId = null;
 
-    const gallery = [...(target.listingImageGallery || [])];
-    let processed = 0;
-    let failed = 0;
+    while (Date.now() < effectiveDeadline) {
+        const target = await findNextRowWithPending();
+        if (!target) break;
+        lastListingId = target._id;
 
-    for (let i = 0; i < gallery.length && processed + failed < PHOTOS_PER_STEP; i++) {
-        const item = gallery[i];
-        if (!isPendingItem(item)) continue;
-        const mlsUrl = item.src;
-        try {
-            const wixUrl = await uploadWithRetry(mlsUrl);
-            gallery[i] = { ...item, src: wixUrl, mlsSourceUrl: mlsUrl };
-            processed += 1;
-        } catch (err) {
-            console.log('processMediaQueueStep upload failed', mlsUrl, err && err.message);
-            failed += 1;
+        const gallery = [...(target.listingImageGallery || [])];
+        for (let i = 0; i < gallery.length && Date.now() < effectiveDeadline; i++) {
+            const item = gallery[i];
+            if (!isPendingItem(item)) continue;
+            const mlsUrl = item.src;
+            try {
+                const wixUrl = await uploadWithRetry(mlsUrl);
+                gallery[i] = { ...item, src: wixUrl, mlsSourceUrl: mlsUrl };
+                totalProcessed += 1;
+            } catch (err) {
+                console.log('processMediaQueueStep upload failed', mlsUrl, err && err.message);
+                totalFailed += 1;
+            }
         }
+
+        const firstWixSrc = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+        const newPrimary = firstWixSrc ? firstWixSrc.src : target.listingPrimaryImage;
+
+        await wixData.update(COLLECTION, {
+            ...target,
+            listingImageGallery: gallery,
+            listingPrimaryImage: newPrimary
+        }, { suppressAuth: true });
     }
 
-    const firstWixSrc = gallery.find(g => g && g.src && !g.src.startsWith('http'));
-    const newPrimary = firstWixSrc ? firstWixSrc.src : target.listingPrimaryImage;
-
-    await wixData.update(COLLECTION, {
-        ...target,
-        listingImageGallery: gallery,
-        listingPrimaryImage: newPrimary
-    }, { suppressAuth: true });
-
+    const moreLeft = await findNextRowWithPending();
     return {
-        processed,
-        failed,
-        listingId: target._id,
-        remaining: findPendingIndex(gallery) >= 0
+        processed: totalProcessed,
+        failed: totalFailed,
+        listingId: lastListingId,
+        remaining: !!moreLeft
     };
 }
 
@@ -93,7 +106,7 @@ export function mediaSrcsToTrash(gallery) {
 }
 
 export async function trashMedia(srcs) {
-    if (!srcs.length) return;
+    if (!srcs || !srcs.length) return;
     try {
         await mediaManager.moveFilesToTrash(srcs);
     } catch (err) {
