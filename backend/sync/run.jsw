@@ -47,6 +47,22 @@ export async function testHydrateAndInsertOne(listingId) {
         return { error: 'not found', listingId: id };
     }
 
+    console.log('[test] raw keys', Object.keys(raw));
+    console.log('[test] raw snapshot', {
+        ListingId: raw.ListingId,
+        StandardStatus: raw.StandardStatus,
+        MlgCanView: raw.MlgCanView,
+        ListPrice: raw.ListPrice,
+        BedroomsTotal: raw.BedroomsTotal,
+        BathroomsTotalInteger: raw.BathroomsTotalInteger,
+        LivingArea: raw.LivingArea,
+        SubdivisionName: raw.SubdivisionName,
+        PostalCity: raw.PostalCity,
+        StreetNumber: raw.StreetNumber,
+        StreetName: raw.StreetName,
+        MediaCount: Array.isArray(raw.Media) ? raw.Media.length : null
+    });
+
     const village = await matchVillage(raw.SubdivisionName);
     if (!village) {
         console.log('[test] no village match for', raw.SubdivisionName);
@@ -61,7 +77,9 @@ export async function testHydrateAndInsertOne(listingId) {
         listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage
     };
 
-    const existing = await wixData.get(COLLECTION, id, { suppressAuth: true }).catch(() => null);
+    console.log('[test] record being inserted', record);
+
+    const existing = await wixData.get(COLLECTION, record._id, { suppressAuth: true }).catch(() => null);
     let action;
     if (existing) {
         await wixData.update(COLLECTION, record, { suppressAuth: true });
@@ -71,16 +89,21 @@ export async function testHydrateAndInsertOne(listingId) {
         action = 'inserted';
     }
 
+    const persisted = await wixData.get(COLLECTION, record._id, { suppressAuth: true }).catch(() => null);
+    console.log('[test] persisted row', persisted);
+
     const result = {
         ok: true,
         action,
         listingId: id,
+        storedId: record._id,
         subdivision: raw.SubdivisionName,
         village: village.villageName,
         price: record.listingPrice,
         imagesUploaded: uploadedCount,
         imagesFailed: errorCount,
-        galleryCount: gallery.length
+        galleryCount: gallery.length,
+        persistedKeys: persisted ? Object.keys(persisted) : null
     };
     console.log('[backend/sync/run.jsw, testHydrateAndInsertOne] returned with', result);
     return result;
