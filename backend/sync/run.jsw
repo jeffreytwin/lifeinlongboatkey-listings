@@ -69,12 +69,17 @@ export async function testHydrateAndInsertOne(listingId) {
         return { error: 'no village match', listingId: id, subdivision: raw.SubdivisionName };
     }
 
+    console.log('[test] typeof transformListing', typeof transformListing);
     const item = transformListing(raw, village);
-    const { gallery, uploadedCount, errorCount } = await resolveGallery(item.listingImageGallery, []);
+    console.log('[test] item type', typeof item, 'isNull', item === null);
+    console.log('[test] item keys', item ? Object.keys(item) : null);
+    console.log('[test] item JSON', JSON.stringify(item));
+
+    const { gallery, uploadedCount, errorCount } = await resolveGallery(item ? item.listingImageGallery : [], []);
     const record = {
-        ...item,
+        ...(item || {}),
         listingImageGallery: gallery,
-        listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage
+        listingPrimaryImage: gallery.length ? gallery[0].src : (item && item.listingPrimaryImage)
     };
 
     console.log('[test] record keys (pre-insert)', Object.keys(record));
