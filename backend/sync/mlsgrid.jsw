@@ -48,6 +48,33 @@ function buildFilter({ since, activeOnly }) {
     return parts.join(' and ');
 }
 
+export async function peekFeed(top = 5) {
+    const headers = await authHeader();
+    const probes = [
+        `OriginatingSystemName eq '${ORIG_SYSTEM}'`,
+        null
+    ];
+    const out = [];
+    for (const f of probes) {
+        const filter = f ? `&$filter=${encodeURIComponent(f)}` : '';
+        const url = `${BASE}?$top=${top}&$count=true${filter}`;
+        try {
+            const page = await fetchWithRetry(url, headers);
+            const samples = (page.value || []).map(v => ({
+                ListingId: v.ListingId,
+                OriginatingSystemName: v.OriginatingSystemName,
+                StandardStatus: v.StandardStatus,
+                PostalCity: v.PostalCity,
+                StateOrProvince: v.StateOrProvince
+            }));
+            out.push({ probe: f || '(no filter)', count: page['@odata.count'], got: samples.length, samples });
+        } catch (err) {
+            out.push({ probe: f || '(no filter)', error: err && err.message });
+        }
+    }
+    return out;
+}
+
 export async function debugHydrate(listingId) {
     const headers = await authHeader();
     const filters = [

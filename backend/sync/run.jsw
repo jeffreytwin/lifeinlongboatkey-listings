@@ -1,6 +1,6 @@
 import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
-import { hydrateListing, debugHydrate } from 'backend/sync/mlsgrid';
+import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { transformListing } from 'backend/sync/transform';
 import { resolveGallery } from 'backend/sync/media';
@@ -17,6 +17,13 @@ export function hourlyIncremental() {
 
 export function nightlyFull() {
     return runSync('full');
+}
+
+export async function testPeekFeed() {
+    console.log('[test] peekFeed');
+    const results = await peekFeed(5);
+    for (const r of results) console.log('[peekFeed]', r);
+    return results;
 }
 
 export async function testDebugHydrate(listingId) {
