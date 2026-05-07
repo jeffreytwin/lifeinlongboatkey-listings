@@ -77,33 +77,42 @@ export async function testHydrateAndInsertOne(listingId) {
         listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage
     };
 
-    console.log('[test] record being inserted', record);
+    console.log('[test] record keys (pre-insert)', Object.keys(record));
+    console.log('[test] record JSON (pre-insert)', JSON.stringify(record));
 
-    const existing = await wixData.get(COLLECTION, record._id, { suppressAuth: true }).catch(() => null);
+    const intendedId = record._id;
+    const existing = await wixData.get(COLLECTION, intendedId, { suppressAuth: true }).catch(() => null);
     let action;
+    let inserted;
     if (existing) {
-        await wixData.update(COLLECTION, record, { suppressAuth: true });
+        inserted = await wixData.update(COLLECTION, record, { suppressAuth: true });
         action = 'updated';
     } else {
-        await wixData.insert(COLLECTION, record, { suppressAuth: true });
+        inserted = await wixData.insert(COLLECTION, record, { suppressAuth: true });
         action = 'inserted';
     }
 
-    const persisted = await wixData.get(COLLECTION, record._id, { suppressAuth: true }).catch(() => null);
-    console.log('[test] persisted row', persisted);
+    console.log('[test] insert returned keys', inserted ? Object.keys(inserted) : null);
+    console.log('[test] insert returned JSON', JSON.stringify(inserted));
+
+    const persistedById = inserted && inserted._id
+        ? await wixData.get(COLLECTION, inserted._id, { suppressAuth: true }).catch(() => null)
+        : null;
+    console.log('[test] persisted row JSON', JSON.stringify(persistedById));
 
     const result = {
         ok: true,
         action,
         listingId: id,
-        storedId: record._id,
+        intendedId,
+        actualId: inserted && inserted._id,
         subdivision: raw.SubdivisionName,
         village: village.villageName,
         price: record.listingPrice,
         imagesUploaded: uploadedCount,
         imagesFailed: errorCount,
         galleryCount: gallery.length,
-        persistedKeys: persisted ? Object.keys(persisted) : null
+        persistedKeys: persistedById ? Object.keys(persistedById) : null
     };
     console.log('[backend/sync/run.jsw, testHydrateAndInsertOne] returned with', result);
     return result;
