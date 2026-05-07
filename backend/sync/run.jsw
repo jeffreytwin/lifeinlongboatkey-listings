@@ -43,41 +43,25 @@ export async function testHydrateAndInsertOne(listingId) {
     const village = await matchVillage(raw.SubdivisionName);
     if (!village) return { error: 'no village match', listingId: id, subdivision: raw.SubdivisionName };
 
-    const item = transformListing(raw, village);
-
-    // Diagnostic: surface what transformListing actually returned. WDE0004
-    // ("[[object Promise]]") would mean Wix's module cache resolved a stale
-    // version of transformListing as async; the check below makes that obvious.
-    console.log('[testHydrate] transform result', {
-        type: typeof item,
-        isPromise: item && typeof item.then === 'function',
-        keys: item && typeof item === 'object' ? Object.keys(item).slice(0, 10) : null,
-        galleryLen: item && Array.isArray(item.listingImageGallery) ? item.listingImageGallery.length : 'n/a'
-    });
+    // transformListing and mergeGallery are exported from pipeline.jsw and
+    // imported here. Wix wraps every exported .jsw function in a web-method
+    // proxy that returns a Promise when called across module boundaries, so
+    // these awaits are required even though the source functions are sync.
+    const item = await transformListing(raw, village);
 
     const existing = await wixData.get(COLLECTION, item._id, { suppressAuth: true }).catch(() => null);
 
     let record = item;
     if (existing) {
-        const merged = mergeGallery(item.listingImageGallery, existing.listingImageGallery);
+        const merged = await mergeGallery(item.listingImageGallery, existing.listingImageGallery);
         const firstWixSrc = merged.find(g => g && g.src && !g.src.startsWith('http'));
         record = {
             ...item,
             listingImageGallery: merged,
             listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
         };
-        console.log('[testHydrate] update record check', {
-            type: typeof record,
-            isPromise: record && typeof record.then === 'function',
-            galleryLen: Array.isArray(record.listingImageGallery) ? record.listingImageGallery.length : 'n/a'
-        });
         await wixData.update(COLLECTION, record, { suppressAuth: true });
     } else {
-        console.log('[testHydrate] insert record check', {
-            type: typeof record,
-            isPromise: record && typeof record.then === 'function',
-            galleryLen: Array.isArray(record.listingImageGallery) ? record.listingImageGallery.length : 'n/a'
-        });
         await wixData.insert(COLLECTION, record, { suppressAuth: true });
     }
 
