@@ -1,102 +1,12 @@
 import wixData from 'wix-data';
-import { runSync } from 'backend/sync/pipeline';
+import { runSync, transformListing, mergeGallery } from 'backend/sync/pipeline';
 import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
-import { transformListing } from 'backend/sync/transform';
-import { resolveGallery } from 'backend/sync/media';
+import { processMediaQueueStep } from 'backend/sync/media';
 
 const COLLECTION = 'HousesforSale';
 
-// Replace with any active Longboat Key Stellar MLS ListingId.
-// You can also copy an existing _id out of the HousesforSale collection.
 const DEFAULT_TEST_LISTING_ID = 'A4672059';
-
-function inlineTitleCase(s) {
-    if (!s) return '';
-    return String(s).toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-}
-function inlineFormatPrice(n) {
-    if (typeof n !== 'number') return n;
-    return `$${n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
-}
-function inlinePriceBucket(n) {
-    if (typeof n !== 'number') return String(n);
-    const s = n.toString();
-    if (s.length === 6) return `$${s.slice(0, 1)}00s`;
-    if (s.length >= 7 && s.length <= 9) {
-        const head = s.length === 7 ? s.slice(0, 1) : s.length === 8 ? s.slice(0, 2) : s.slice(0, 3);
-        return `${head}M+`;
-    }
-    return `$${s}`;
-}
-function inlineFormatSquareFeet(v) {
-    if (v === undefined || v === null) return '0';
-    return v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-}
-function inlineBuildAddress(data) {
-    const street = [data.StreetNumber, inlineTitleCase(data.StreetName), inlineTitleCase(data.StreetSuffix)].filter(Boolean).join(' ');
-    const propertyAdd = `${street}, ${inlineTitleCase(data.City)}, ${data.StateOrProvince} ${data.PostalCode}`;
-    const addressObject = {
-        city: data.City,
-        location: { latitude: data.Latitude, longitude: data.Longitude },
-        streetAddress: { number: data.StreetNumber, name: inlineTitleCase(data.StreetName) },
-        country: data.Country,
-        postalCode: data.PostalCode,
-        formatted: `${propertyAdd}, ${data.Country}`,
-        subdivision: data.SubdivisionName
-    };
-    return { propertyAdd, addressObject };
-}
-function inlineRawGallery(media) {
-    if (!Array.isArray(media)) return [];
-    return [...media].sort((a, b) => (a.Order || 0) - (b.Order || 0)).map(m => ({
-        type: 'Image',
-        title: m.LongDescription || '',
-        src: m.MediaURL,
-        order: m.Order,
-        mlsModificationTimestamp: m.MediaModificationTimestamp || m.ModificationTimestamp || null
-    }));
-}
-function inlineTransformListing(data, village) {
-    const { propertyAdd, addressObject } = inlineBuildAddress(data);
-    const gallery = inlineRawGallery(data.Media);
-    const primary = gallery.length ? gallery[0].src : null;
-    return {
-        _id: data.ListingId,
-        propertyAddress: propertyAdd,
-        propertyAddressGoogleMaps: addressObject,
-        listingPrimaryImage: primary,
-        listingPrice: typeof data.ListPrice === 'number' ? inlineFormatPrice(data.ListPrice) : data.ListPrice,
-        listingPricePure: data.ListPrice,
-        listingPriceSort: [inlinePriceBucket(data.ListPrice)],
-        homeType: data.PropertySubType,
-        village: village ? village.villageName : null,
-        village1: village ? village.village1 : null,
-        villageLink: village ? village.villageURL : null,
-        villageSortHelp: village ? village.villageSortHelp : null,
-        blueTag1: village ? village.blueTag1 : '',
-        purpleTag1: village ? village.purpleTag1 : '',
-        greenTag1: village ? village.greenTag1 : '',
-        bedrooms: data.BedroomsTotal,
-        listingAgentName: data.ListAgentFullName,
-        listingAgentMls: data.ListAgentMlsId,
-        listingAgentPhone: data.ListAgentDirectPhone,
-        listingAgentCompany: data.ListOfficeName,
-        listingBrokerageContactInformation: data.MFR_AttributionContact,
-        bathrooms: data.BathroomsTotalInteger,
-        bathroomsSort: [Math.ceil(data.BathroomsTotalInteger || 0).toString()],
-        garages: `${data.GarageSpaces == null ? 0 : data.GarageSpaces} Car`,
-        squareFeet: inlineFormatSquareFeet(data.LivingArea),
-        propertyDescription: data.PublicRemarks,
-        listingImageGallery: gallery,
-        standardStatus: data.StandardStatus,
-        mlgCanView: data.MlgCanView != null ? data.MlgCanView.toString() : null,
-        virtualTourUrl: data.VirtualTourURLUnbranded,
-        modificationTimestamp: data.ModificationTimestamp ? new Date(data.ModificationTimestamp) : null,
-        subdivision: data.SubdivisionName ? data.SubdivisionName.replace('SAVANNAH', 'SAVANNA') : null,
-        dateOfMlsPull: new Date()
-    };
-}
 
 export function hourlyIncremental() {
     return runSync('incremental');
@@ -106,8 +16,11 @@ export function nightlyFull() {
     return runSync('full');
 }
 
+export function processMediaStep() {
+    return processMediaQueueStep();
+}
+
 export async function testPeekFeed() {
-    console.log('[test] peekFeed');
     const results = await peekFeed(5);
     for (const r of results) console.log('[peekFeed]', r);
     return results;
@@ -115,7 +28,6 @@ export async function testPeekFeed() {
 
 export async function testDebugHydrate(listingId) {
     const id = listingId || DEFAULT_TEST_LISTING_ID;
-    console.log('[test] debugHydrate', id);
     const results = await debugHydrate(id);
     for (const r of results) console.log('[debugHydrate]', r);
     return results;
@@ -123,96 +35,47 @@ export async function testDebugHydrate(listingId) {
 
 export async function testHydrateAndInsertOne(listingId) {
     const id = listingId || DEFAULT_TEST_LISTING_ID;
-    console.log('[backend/sync/run.jsw, testHydrateAndInsertOne] called with', id);
-
     invalidateVillageCache();
 
-    console.log('[test] hydrating', id);
     const raw = await hydrateListing(id);
-    if (!raw) {
-        console.log('[test] no record returned from hydrate');
-        return { error: 'not found', listingId: id };
-    }
-
-    console.log('[test] raw keys', Object.keys(raw));
-    console.log('[test] raw snapshot', {
-        ListingId: raw.ListingId,
-        StandardStatus: raw.StandardStatus,
-        MlgCanView: raw.MlgCanView,
-        ListPrice: raw.ListPrice,
-        BedroomsTotal: raw.BedroomsTotal,
-        BathroomsTotalInteger: raw.BathroomsTotalInteger,
-        LivingArea: raw.LivingArea,
-        SubdivisionName: raw.SubdivisionName,
-        PostalCity: raw.PostalCity,
-        StreetNumber: raw.StreetNumber,
-        StreetName: raw.StreetName,
-        MediaCount: Array.isArray(raw.Media) ? raw.Media.length : null
-    });
+    if (!raw) return { error: 'not found', listingId: id };
 
     const village = await matchVillage(raw.SubdivisionName);
-    if (!village) {
-        console.log('[test] no village match for', raw.SubdivisionName);
-        return { error: 'no village match', listingId: id, subdivision: raw.SubdivisionName };
-    }
+    if (!village) return { error: 'no village match', listingId: id, subdivision: raw.SubdivisionName };
 
-    console.log('[test] typeof transformListing', typeof transformListing);
-    const importedItem = transformListing(raw, village);
-    console.log('[test] imported item keys count', importedItem ? Object.keys(importedItem).length : 'n/a');
-    console.log('[test] imported item keys: ' + (importedItem ? Object.keys(importedItem).join(',') : 'n/a'));
+    const item = transformListing(raw, village);
+    const existing = await wixData.get(COLLECTION, item._id, { suppressAuth: true }).catch(() => null);
 
-    const inlineItem = inlineTransformListing(raw, village);
-    console.log('[test] inline item keys count', inlineItem ? Object.keys(inlineItem).length : 'n/a');
-    console.log('[test] inline item keys: ' + (inlineItem ? Object.keys(inlineItem).join(',') : 'n/a'));
-    console.log('[test] inline item JSON: ' + JSON.stringify(inlineItem));
-
-    const item = (importedItem && Object.keys(importedItem).length > 2) ? importedItem : inlineItem;
-    console.log('[test] using ' + (item === importedItem ? 'IMPORTED' : 'INLINE') + ' transform');
-
-    // Skip media processing for now - 80 sequential mediaManager.upload() calls
-    // exceed the backend timeout. Once the data path is verified we can design
-    // an async media pipeline.
-    const record = {
-        ...(item || {}),
-        listingImageGallery: [],
-        listingPrimaryImage: null
-    };
-
-    console.log('[test] record keys (pre-insert)', Object.keys(record));
-    console.log('[test] record JSON (pre-insert)', JSON.stringify(record));
-
-    const intendedId = record._id;
-    const existing = await wixData.get(COLLECTION, intendedId, { suppressAuth: true }).catch(() => null);
-    let action;
-    let inserted;
+    let record = item;
     if (existing) {
-        inserted = await wixData.update(COLLECTION, record, { suppressAuth: true });
-        action = 'updated';
+        const merged = mergeGallery(item.listingImageGallery, existing.listingImageGallery);
+        const firstWixSrc = merged.find(g => g && g.src && !g.src.startsWith('http'));
+        record = {
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
+        };
+        await wixData.update(COLLECTION, record, { suppressAuth: true });
     } else {
-        inserted = await wixData.insert(COLLECTION, record, { suppressAuth: true });
-        action = 'inserted';
+        await wixData.insert(COLLECTION, record, { suppressAuth: true });
     }
 
-    console.log('[test] insert returned keys', inserted ? Object.keys(inserted) : null);
-    console.log('[test] insert returned JSON', JSON.stringify(inserted));
-
-    const persistedById = inserted && inserted._id
-        ? await wixData.get(COLLECTION, inserted._id, { suppressAuth: true }).catch(() => null)
-        : null;
-    console.log('[test] persisted row JSON', JSON.stringify(persistedById));
-
-    const result = {
+    const persisted = await wixData.get(COLLECTION, record._id, { suppressAuth: true }).catch(() => null);
+    return {
         ok: true,
-        action,
+        action: existing ? 'updated' : 'inserted',
         listingId: id,
-        intendedId,
-        actualId: inserted && inserted._id,
+        storedId: record._id,
         subdivision: raw.SubdivisionName,
         village: village.villageName,
         price: record.listingPrice,
-        mediaSkipped: true,
-        persistedKeys: persistedById ? Object.keys(persistedById) : null
+        gallerySize: persisted && Array.isArray(persisted.listingImageGallery) ? persisted.listingImageGallery.length : 0,
+        firstGallerySrc: persisted && persisted.listingImageGallery && persisted.listingImageGallery[0] ? persisted.listingImageGallery[0].src : null
     };
-    console.log('[backend/sync/run.jsw, testHydrateAndInsertOne] returned with', result);
+}
+
+export async function testProcessMediaStep() {
+    const result = await processMediaQueueStep();
+    console.log('[processMediaStep]', result);
     return result;
 }
