@@ -169,11 +169,13 @@ export async function testHydrateAndInsertOne(listingId) {
     const item = (importedItem && Object.keys(importedItem).length > 2) ? importedItem : inlineItem;
     console.log('[test] using ' + (item === importedItem ? 'IMPORTED' : 'INLINE') + ' transform');
 
-    const { gallery, uploadedCount, errorCount } = await resolveGallery(item ? item.listingImageGallery : [], []);
+    // Skip media processing for now - 80 sequential mediaManager.upload() calls
+    // exceed the backend timeout. Once the data path is verified we can design
+    // an async media pipeline.
     const record = {
         ...(item || {}),
-        listingImageGallery: gallery,
-        listingPrimaryImage: gallery.length ? gallery[0].src : (item && item.listingPrimaryImage)
+        listingImageGallery: [],
+        listingPrimaryImage: null
     };
 
     console.log('[test] record keys (pre-insert)', Object.keys(record));
@@ -208,9 +210,7 @@ export async function testHydrateAndInsertOne(listingId) {
         subdivision: raw.SubdivisionName,
         village: village.villageName,
         price: record.listingPrice,
-        imagesUploaded: uploadedCount,
-        imagesFailed: errorCount,
-        galleryCount: gallery.length,
+        mediaSkipped: true,
         persistedKeys: persistedById ? Object.keys(persistedById) : null
     };
     console.log('[backend/sync/run.jsw, testHydrateAndInsertOne] returned with', result);
