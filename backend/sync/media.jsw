@@ -6,7 +6,7 @@ const COLLECTION = 'HousesforSale';
 const UPLOAD_FOLDER = '/JeffUploadsNew';
 const MAX_ATTEMPTS = 3;
 const QUEUE_SCAN_LIMIT = 50;
-const PHOTOS_PER_STEP = 5;
+const PHOTOS_PER_STEP = 1;
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
