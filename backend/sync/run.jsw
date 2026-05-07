@@ -9,7 +9,7 @@ const COLLECTION = 'HousesforSale';
 
 // Replace with any active Longboat Key Stellar MLS ListingId.
 // You can also copy an existing _id out of the HousesforSale collection.
-const DEFAULT_TEST_LISTING_ID = 'A4687694';
+const DEFAULT_TEST_LISTING_ID = 'A4672059';
 
 export function hourlyIncremental() {
     return runSync('incremental');
