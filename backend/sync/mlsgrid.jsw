@@ -48,6 +48,34 @@ function buildFilter({ since, activeOnly }) {
     return parts.join(' and ');
 }
 
+export async function debugHydrate(listingId) {
+    const headers = await authHeader();
+    const filters = [
+        `ListingId eq '${listingId}' and OriginatingSystemName eq '${ORIG_SYSTEM}'`,
+        `ListingId eq '${listingId}'`,
+        `ListingKey eq '${listingId}'`
+    ];
+    const results = [];
+    for (const f of filters) {
+        const url = `${BASE}?$filter=${encodeURIComponent(f)}&$top=1&$count=true`;
+        try {
+            const page = await fetchWithRetry(url, headers);
+            const sample = page.value && page.value[0] ? {
+                ListingId: page.value[0].ListingId,
+                ListingKey: page.value[0].ListingKey,
+                OriginatingSystemName: page.value[0].OriginatingSystemName,
+                StandardStatus: page.value[0].StandardStatus,
+                PostalCity: page.value[0].PostalCity,
+                SubdivisionName: page.value[0].SubdivisionName
+            } : null;
+            results.push({ filter: f, count: page['@odata.count'], got: (page.value || []).length, sample });
+        } catch (err) {
+            results.push({ filter: f, error: err && err.message });
+        }
+    }
+    return results;
+}
+
 export async function hydrateListing(listingId) {
     if (!listingId) return null;
     const headers = await authHeader();
