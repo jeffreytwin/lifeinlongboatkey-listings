@@ -1,13 +1,19 @@
 import wixData from 'wix-data';
 import { mediaManager } from 'wix-media-backend';
+import { fetch } from 'wix-fetch';
+import { getSecret } from 'wix-secrets-backend';
 const dataURLdecoder = require('image-data-uri');
 
 const COLLECTION = 'HousesforSale';
 const UPLOAD_FOLDER = '/JeffUploadsNew';
 const MAX_ATTEMPTS = 3;
 const QUEUE_SCAN_LIMIT = 200;
-const DEFAULT_DEADLINE_MS = 13 * 60 * 1000;
+const DEFAULT_DEADLINE_MS = 50 * 1000;
 const FLUSH_EVERY = 5;
+
+const SITE_URL = 'https://www.lifeinlongboatkey.com';
+const CHAIN_ENDPOINT = `${SITE_URL}/_functions/drainMedia`;
+const CHAIN_DISPATCH_TIMEOUT_MS = 200;
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -110,6 +116,42 @@ export async function processMediaQueueStep(deadline) {
         listingId: lastListingId,
         remaining: !!moreLeft
     };
+}
+
+// Fire-and-forget: kicks off the next link of the photo-drain HTTP chain.
+// Each link invokes /_functions/drainMedia which calls processMediaQueueStep
+// in a fresh Wix invocation budget, then triggers another link if anything
+// still remains. We use Promise.race against a short timeout so we return as
+// soon as the request is dispatched, without waiting for the link to finish
+// its work.
+export async function triggerMediaDrain() {
+    let secret;
+    try {
+        secret = await getSecret('SYNC_TRIGGER_SECRET');
+    } catch (err) {
+        console.log('triggerMediaDrain: secret read failed', err && err.message);
+        return;
+    }
+    if (!secret) {
+        console.log('triggerMediaDrain: SYNC_TRIGGER_SECRET not set');
+        return;
+    }
+
+    const send = fetch(CHAIN_ENDPOINT, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-sync-secret': secret
+        },
+        body: '{}'
+    }).catch(err => {
+        console.log('triggerMediaDrain: fetch error', err && err.message);
+    });
+
+    await Promise.race([
+        send,
+        new Promise(r => setTimeout(r, CHAIN_DISPATCH_TIMEOUT_MS))
+    ]);
 }
 
 export function mediaSrcsToTrash(gallery) {

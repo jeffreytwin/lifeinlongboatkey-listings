@@ -2,12 +2,12 @@ import wixData from 'wix-data';
 import { fetchProperties } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { planIncremental, planFull } from 'backend/sync/diff';
-import { processMediaQueueStep, trashMedia } from 'backend/sync/media';
+import { processMediaQueueStep, trashMedia, triggerMediaDrain } from 'backend/sync/media';
 
 const COLLECTION = 'HousesforSale';
 const RUNS = 'SyncRuns';
 const POSTAL_CITY = 'longboat key';
-const SOFT_DEADLINE_MS = 13 * 60 * 1000;
+const SOFT_DEADLINE_MS = 50 * 1000;
 
 // Inlined transform. Wix's module cache for a separate transform.jsw kept
 // returning an empty stub even when the source was correct, so the function
@@ -267,6 +267,11 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
         const queueResult = await processMediaQueueStep(deadline);
         counts.imagesUploaded += queueResult.processed || 0;
         counts.imagesFailed += queueResult.failed || 0;
+        if (queueResult.remaining) await triggerMediaDrain();
+    } else {
+        // Out of inline budget; hand off to the HTTP chain to drain whatever
+        // is still pending in fresh per-invocation budgets.
+        await triggerMediaDrain();
     }
 
     return counts;

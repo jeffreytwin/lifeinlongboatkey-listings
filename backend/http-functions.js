@@ -2,7 +2,10 @@ import { ok, badRequest, forbidden, serverError, response } from 'wix-http-funct
 import { getSecret } from 'wix-secrets-backend';
 import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
+import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
 import { seedVillages } from 'backend/seed-villages';
+
+const CHAIN_DEADLINE_MS = 50 * 1000;
 
 async function authorized(request) {
     try {
@@ -45,6 +48,21 @@ export async function post_seedVillages(request) {
     try {
         const result = await seedVillages();
         return jsonResponse(200, result);
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Drains photo-upload queue for one ~50s budget, then if the queue still has
+// pending items fires off the next link of the chain. Each link gets a fresh
+// Wix invocation budget, so a long backlog drains continuously without any
+// single function exceeding the per-call timeout.
+export async function post_drainMedia(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const result = await processMediaQueueStep(Date.now() + CHAIN_DEADLINE_MS);
+        if (result.remaining) await triggerMediaDrain();
+        return jsonResponse(200, { ...result, chained: !!result.remaining });
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });
     }

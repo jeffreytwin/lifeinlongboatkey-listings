@@ -2,7 +2,7 @@ import wixData from 'wix-data';
 import { runSync, transformListing, mergeGallery } from 'backend/sync/pipeline';
 import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
-import { processMediaQueueStep } from 'backend/sync/media';
+import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
 
 const COLLECTION = 'HousesforSale';
 
@@ -20,8 +20,10 @@ export function nightlyFull() {
     return runSync('full');
 }
 
-export function processMediaStep() {
-    return processMediaQueueStep();
+export async function processMediaStep() {
+    const result = await processMediaQueueStep(Date.now() + TEST_PANEL_DEADLINE_MS);
+    if (result.remaining) await triggerMediaDrain();
+    return result;
 }
 
 export async function testPeekFeed() {
@@ -74,6 +76,7 @@ export async function testHydrateAndInsertOne(listingId) {
     }
 
     const queueResult = await processMediaQueueStep(Date.now() + TEST_PANEL_DEADLINE_MS);
+    if (queueResult.remaining) await triggerMediaDrain();
 
     return {
         ok: true,
@@ -86,12 +89,14 @@ export async function testHydrateAndInsertOne(listingId) {
         gallerySize: merged.length,
         imagesUploaded: queueResult.processed,
         imagesFailed: queueResult.failed,
-        imagesRemaining: queueResult.remaining
+        imagesRemaining: queueResult.remaining,
+        chained: !!queueResult.remaining
     };
 }
 
 export async function testProcessMediaStep() {
     const result = await processMediaQueueStep(Date.now() + TEST_PANEL_DEADLINE_MS);
+    if (result.remaining) await triggerMediaDrain();
     console.log('[processMediaStep]', result);
-    return result;
+    return { ...result, chained: !!result.remaining };
 }
