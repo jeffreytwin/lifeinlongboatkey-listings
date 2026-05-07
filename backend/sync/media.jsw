@@ -6,7 +6,8 @@ const COLLECTION = 'HousesforSale';
 const UPLOAD_FOLDER = '/JeffUploadsNew';
 const MAX_ATTEMPTS = 3;
 const QUEUE_SCAN_LIMIT = 200;
-const DEFAULT_DEADLINE_MS = 60 * 60 * 1000;
+const DEFAULT_DEADLINE_MS = 13 * 60 * 1000;
+const FLUSH_EVERY = 5;
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -51,9 +52,19 @@ async function findNextRowWithPending() {
     return res.items.find(row => findPendingIndex(row.listingImageGallery) >= 0) || null;
 }
 
-// Backstop drainer for galleries left with raw https:// items because a sync
-// run was killed mid-listing. Steady state never has pending items because
-// applyWrites resolves galleries inline. This function loops across rows
+async function flushGallery(target, gallery) {
+    const firstWixSrc = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+    const newPrimary = firstWixSrc ? firstWixSrc.src : target.listingPrimaryImage;
+    await wixData.update(COLLECTION, {
+        ...target,
+        listingImageGallery: gallery,
+        listingPrimaryImage: newPrimary
+    }, { suppressAuth: true });
+}
+
+// Upload pending https:// gallery items to Wix media. Flushes the row every
+// FLUSH_EVERY successful uploads so progress is durable even if the function
+// is killed mid-loop by Wix's per-invocation timeout. Loops across rows
 // until the deadline is reached or no pending media remain.
 export async function processMediaQueueStep(deadline) {
     const effectiveDeadline = deadline || (Date.now() + DEFAULT_DEADLINE_MS);
@@ -67,6 +78,8 @@ export async function processMediaQueueStep(deadline) {
         lastListingId = target._id;
 
         const gallery = [...(target.listingImageGallery || [])];
+        let dirty = 0;
+
         for (let i = 0; i < gallery.length && Date.now() < effectiveDeadline; i++) {
             const item = gallery[i];
             if (!isPendingItem(item)) continue;
@@ -75,20 +88,19 @@ export async function processMediaQueueStep(deadline) {
                 const wixUrl = await uploadWithRetry(mlsUrl);
                 gallery[i] = { ...item, src: wixUrl, mlsSourceUrl: mlsUrl };
                 totalProcessed += 1;
+                dirty += 1;
             } catch (err) {
                 console.log('processMediaQueueStep upload failed', mlsUrl, err && err.message);
                 totalFailed += 1;
             }
+
+            if (dirty >= FLUSH_EVERY) {
+                await flushGallery(target, gallery);
+                dirty = 0;
+            }
         }
 
-        const firstWixSrc = gallery.find(g => g && g.src && !g.src.startsWith('http'));
-        const newPrimary = firstWixSrc ? firstWixSrc.src : target.listingPrimaryImage;
-
-        await wixData.update(COLLECTION, {
-            ...target,
-            listingImageGallery: gallery,
-            listingPrimaryImage: newPrimary
-        }, { suppressAuth: true });
+        if (dirty > 0) await flushGallery(target, gallery);
     }
 
     const moreLeft = await findNextRowWithPending();

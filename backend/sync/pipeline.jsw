@@ -2,12 +2,12 @@ import wixData from 'wix-data';
 import { fetchProperties } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { planIncremental, planFull } from 'backend/sync/diff';
-import { uploadWithRetry, trashMedia } from 'backend/sync/media';
+import { processMediaQueueStep, trashMedia } from 'backend/sync/media';
 
 const COLLECTION = 'HousesforSale';
 const RUNS = 'SyncRuns';
 const POSTAL_CITY = 'longboat key';
-const SOFT_DEADLINE_MS = 60 * 60 * 1000;
+const SOFT_DEADLINE_MS = 13 * 60 * 1000;
 
 // Inlined transform. Wix's module cache for a separate transform.jsw kept
 // returning an empty stub even when the source was correct, so the function
@@ -185,34 +185,6 @@ export function mergeGallery(incoming, existing) {
     });
 }
 
-// Resolve a listing's gallery to fully-uploaded form: keep wix:image:// items
-// from the previous version when their MLS source URL and modification
-// timestamp match (mergeGallery), then upload any remaining raw https items.
-// Stops uploading once Date.now() crosses the deadline; remaining items stay
-// as raw https in the returned gallery and will be picked up on the next run.
-export async function resolveGalleryInline(incoming, existing, deadline) {
-    const merged = mergeGallery(incoming, existing);
-    let uploadedCount = 0;
-    let failedCount = 0;
-    if (!Array.isArray(merged)) return { gallery: [], uploadedCount, failedCount };
-
-    for (let i = 0; i < merged.length; i++) {
-        const item = merged[i];
-        if (!item || typeof item.src !== 'string' || !item.src.startsWith('http')) continue;
-        if (deadline && Date.now() >= deadline) break;
-        const mlsUrl = item.src;
-        try {
-            const wixUrl = await uploadWithRetry(mlsUrl);
-            merged[i] = { ...item, src: wixUrl, mlsSourceUrl: mlsUrl };
-            uploadedCount += 1;
-        } catch (err) {
-            console.log('inline upload failed', mlsUrl, err && err.message);
-            failedCount += 1;
-        }
-    }
-    return { gallery: merged, uploadedCount, failedCount };
-}
-
 function galleryWixSrcs(gallery) {
     if (!Array.isArray(gallery)) return [];
     return gallery
@@ -225,6 +197,14 @@ function findOrphanedSrcs(prevGallery, nextGallery) {
     return galleryWixSrcs(prevGallery).filter(src => !nextSet.has(src));
 }
 
+// Two-phase write:
+//   1) Row state changes (insert/update/delete) using the merged gallery.
+//      Gallery items that already have wix:image:// srcs are kept; new
+//      photos go in as raw https:// URLs. This phase is fast and always
+//      durable.
+//   2) Drain the photo queue with whatever budget remains. The queue worker
+//      flushes every 5 successful uploads so progress survives a function
+//      kill mid-loop.
 async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
     const counts = {
         inserted: 0, updated: 0, deleted: 0,
@@ -232,16 +212,11 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
     };
 
     for (const item of toInsert) {
-        const { gallery, uploadedCount, failedCount } = await resolveGalleryInline(
-            item.listingImageGallery, [], deadline
-        );
-        counts.imagesUploaded += uploadedCount;
-        counts.imagesFailed += failedCount;
-        const firstWix = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+        const merged = mergeGallery(item.listingImageGallery, []);
         const record = {
             ...item,
-            listingImageGallery: gallery,
-            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage
+            listingImageGallery: merged,
+            listingPrimaryImage: item.listingPrimaryImage
         };
         try {
             await wixData.insert(COLLECTION, record, { suppressAuth: true });
@@ -253,15 +228,11 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
 
     for (const { item, prev } of toUpdate) {
         const prevGallery = prev && prev.listingImageGallery;
-        const { gallery, uploadedCount, failedCount } = await resolveGalleryInline(
-            item.listingImageGallery, prevGallery, deadline
-        );
-        counts.imagesUploaded += uploadedCount;
-        counts.imagesFailed += failedCount;
-        const firstWix = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+        const merged = mergeGallery(item.listingImageGallery, prevGallery);
+        const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
         const record = {
             ...item,
-            listingImageGallery: gallery,
+            listingImageGallery: merged,
             listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage
         };
         try {
@@ -271,7 +242,7 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
             console.log('update failed for', item._id, err && err.message);
         }
 
-        const orphaned = findOrphanedSrcs(prevGallery, gallery);
+        const orphaned = findOrphanedSrcs(prevGallery, merged);
         if (orphaned.length) {
             await trashMedia(orphaned);
             counts.imagesTrashed += orphaned.length;
@@ -291,6 +262,13 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
             counts.imagesTrashed += wixSrcs.length;
         }
     }
+
+    if (Date.now() < deadline) {
+        const queueResult = await processMediaQueueStep(deadline);
+        counts.imagesUploaded += queueResult.processed || 0;
+        counts.imagesFailed += queueResult.failed || 0;
+    }
+
     return counts;
 }
 
