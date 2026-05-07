@@ -11,6 +11,93 @@ const COLLECTION = 'HousesforSale';
 // You can also copy an existing _id out of the HousesforSale collection.
 const DEFAULT_TEST_LISTING_ID = 'A4672059';
 
+function inlineTitleCase(s) {
+    if (!s) return '';
+    return String(s).toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
+function inlineFormatPrice(n) {
+    if (typeof n !== 'number') return n;
+    return `$${n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+}
+function inlinePriceBucket(n) {
+    if (typeof n !== 'number') return String(n);
+    const s = n.toString();
+    if (s.length === 6) return `$${s.slice(0, 1)}00s`;
+    if (s.length >= 7 && s.length <= 9) {
+        const head = s.length === 7 ? s.slice(0, 1) : s.length === 8 ? s.slice(0, 2) : s.slice(0, 3);
+        return `${head}M+`;
+    }
+    return `$${s}`;
+}
+function inlineFormatSquareFeet(v) {
+    if (v === undefined || v === null) return '0';
+    return v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function inlineBuildAddress(data) {
+    const street = [data.StreetNumber, inlineTitleCase(data.StreetName), inlineTitleCase(data.StreetSuffix)].filter(Boolean).join(' ');
+    const propertyAdd = `${street}, ${inlineTitleCase(data.City)}, ${data.StateOrProvince} ${data.PostalCode}`;
+    const addressObject = {
+        city: data.City,
+        location: { latitude: data.Latitude, longitude: data.Longitude },
+        streetAddress: { number: data.StreetNumber, name: inlineTitleCase(data.StreetName) },
+        country: data.Country,
+        postalCode: data.PostalCode,
+        formatted: `${propertyAdd}, ${data.Country}`,
+        subdivision: data.SubdivisionName
+    };
+    return { propertyAdd, addressObject };
+}
+function inlineRawGallery(media) {
+    if (!Array.isArray(media)) return [];
+    return [...media].sort((a, b) => (a.Order || 0) - (b.Order || 0)).map(m => ({
+        type: 'Image',
+        title: m.LongDescription || '',
+        src: m.MediaURL,
+        order: m.Order,
+        mlsModificationTimestamp: m.MediaModificationTimestamp || m.ModificationTimestamp || null
+    }));
+}
+function inlineTransformListing(data, village) {
+    const { propertyAdd, addressObject } = inlineBuildAddress(data);
+    const gallery = inlineRawGallery(data.Media);
+    const primary = gallery.length ? gallery[0].src : null;
+    return {
+        _id: data.ListingId,
+        propertyAddress: propertyAdd,
+        propertyAddressGoogleMaps: addressObject,
+        listingPrimaryImage: primary,
+        listingPrice: typeof data.ListPrice === 'number' ? inlineFormatPrice(data.ListPrice) : data.ListPrice,
+        listingPricePure: data.ListPrice,
+        listingPriceSort: [inlinePriceBucket(data.ListPrice)],
+        homeType: data.PropertySubType,
+        village: village ? village.villageName : null,
+        village1: village ? village.village1 : null,
+        villageLink: village ? village.villageURL : null,
+        villageSortHelp: village ? village.villageSortHelp : null,
+        blueTag1: village ? village.blueTag1 : '',
+        purpleTag1: village ? village.purpleTag1 : '',
+        greenTag1: village ? village.greenTag1 : '',
+        bedrooms: data.BedroomsTotal,
+        listingAgentName: data.ListAgentFullName,
+        listingAgentMls: data.ListAgentMlsId,
+        listingAgentPhone: data.ListAgentDirectPhone,
+        listingAgentCompany: data.ListOfficeName,
+        listingBrokerageContactInformation: data.MFR_AttributionContact,
+        bathrooms: data.BathroomsTotalInteger,
+        bathroomsSort: [Math.ceil(data.BathroomsTotalInteger || 0).toString()],
+        garages: `${data.GarageSpaces == null ? 0 : data.GarageSpaces} Car`,
+        squareFeet: inlineFormatSquareFeet(data.LivingArea),
+        propertyDescription: data.PublicRemarks,
+        listingImageGallery: gallery,
+        standardStatus: data.StandardStatus,
+        mlgCanView: data.MlgCanView != null ? data.MlgCanView.toString() : null,
+        virtualTourUrl: data.VirtualTourURLUnbranded,
+        modificationTimestamp: data.ModificationTimestamp ? new Date(data.ModificationTimestamp) : null,
+        subdivision: data.SubdivisionName ? data.SubdivisionName.replace('SAVANNAH', 'SAVANNA') : null,
+        dateOfMlsPull: new Date()
+    };
+}
+
 export function hourlyIncremental() {
     return runSync('incremental');
 }
@@ -70,10 +157,17 @@ export async function testHydrateAndInsertOne(listingId) {
     }
 
     console.log('[test] typeof transformListing', typeof transformListing);
-    const item = transformListing(raw, village);
-    console.log('[test] item type', typeof item, 'isNull', item === null);
-    console.log('[test] item keys', item ? Object.keys(item) : null);
-    console.log('[test] item JSON', JSON.stringify(item));
+    const importedItem = transformListing(raw, village);
+    console.log('[test] imported item keys count', importedItem ? Object.keys(importedItem).length : 'n/a');
+    console.log('[test] imported item keys: ' + (importedItem ? Object.keys(importedItem).join(',') : 'n/a'));
+
+    const inlineItem = inlineTransformListing(raw, village);
+    console.log('[test] inline item keys count', inlineItem ? Object.keys(inlineItem).length : 'n/a');
+    console.log('[test] inline item keys: ' + (inlineItem ? Object.keys(inlineItem).join(',') : 'n/a'));
+    console.log('[test] inline item JSON: ' + JSON.stringify(inlineItem));
+
+    const item = (importedItem && Object.keys(importedItem).length > 2) ? importedItem : inlineItem;
+    console.log('[test] using ' + (item === importedItem ? 'IMPORTED' : 'INLINE') + ' transform');
 
     const { gallery, uploadedCount, errorCount } = await resolveGallery(item ? item.listingImageGallery : [], []);
     const record = {
