@@ -1,4 +1,11 @@
+import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
+import { fetchOneByListingId } from 'backend/sync/mlsgrid';
+import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
+import { transformListing } from 'backend/sync/transform';
+import { resolveGallery } from 'backend/sync/media';
+
+const COLLECTION = 'HousesforSale';
 
 export function hourlyIncremental() {
     return runSync('incremental');
@@ -6,4 +13,38 @@ export function hourlyIncremental() {
 
 export function nightlyFull() {
     return runSync('full');
+}
+
+export async function testHydrateAndInsertOne(listingId) {
+    invalidateVillageCache();
+
+    const raw = await fetchOneByListingId(listingId);
+    if (!raw) throw new Error(`No MLSGrid listing found for ${listingId}`);
+
+    const village = await matchVillage(raw.SubdivisionName);
+    const item = transformListing(raw, village);
+
+    const existing = await wixData.get(COLLECTION, item._id, { suppressAuth: true }).catch(() => null);
+    const prevGallery = existing && Array.isArray(existing.listingImageGallery) ? existing.listingImageGallery : [];
+
+    const { gallery, uploadedCount, errorCount } = await resolveGallery(item.listingImageGallery, prevGallery);
+    const record = {
+        ...item,
+        listingImageGallery: gallery,
+        listingPrimaryImage: gallery.length ? gallery[0].src : item.listingPrimaryImage
+    };
+
+    if (existing) {
+        await wixData.update(COLLECTION, record, { suppressAuth: true });
+    } else {
+        await wixData.insert(COLLECTION, record, { suppressAuth: true });
+    }
+
+    return {
+        listingId: item._id,
+        action: existing ? 'updated' : 'inserted',
+        imagesUploaded: uploadedCount,
+        imagesFailed: errorCount,
+        galleryLength: gallery.length
+    };
 }
