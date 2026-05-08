@@ -1,8 +1,9 @@
 import wixData from 'wix-data';
-import { runSync, transformListing, mergeGallery } from 'backend/sync/pipeline';
+import { runSync, transformListing, mergeGallery, bootstrap } from 'backend/sync/pipeline';
 import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
+import { BOOTSTRAP_IDS } from 'backend/sync/bootstrap-ids';
 
 const COLLECTION = 'HousesforSale';
 
@@ -92,6 +93,15 @@ export async function testHydrateAndInsertOne(listingId) {
         imagesRemaining: queueResult.remaining,
         chained: !!queueResult.remaining
     };
+}
+
+// One-time population of HousesforSale from the bootstrap-ids master list.
+// The test panel will likely 504 because we're inserting up to 350 rows in
+// one invocation, but the work continues server-side; check SyncRuns and
+// HousesforSale to see progress. Photo uploads then drain via the HTTP
+// self-chain over the following several hours.
+export async function runBootstrap() {
+    return bootstrap(BOOTSTRAP_IDS);
 }
 
 export async function testProcessMediaStep() {

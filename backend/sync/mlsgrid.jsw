@@ -13,6 +13,7 @@ function normalizeListingId(listingId) {
 const EXPAND = 'Media,Rooms,UnitTypes';
 const PAGE_SIZE = 200;
 const MAX_RETRIES = 4;
+const FETCH_BY_ID_BATCH = 50;
 
 async function authHeader() {
     const token = await getSecret('MLSGRID_API_KEY');
@@ -123,6 +124,38 @@ export async function hydrateListing(listingId) {
     const page = await fetchWithRetry(url, headers);
     if (Array.isArray(page.value) && page.value.length) return page.value[0];
     return null;
+}
+
+// Fetch a specific set of MLS listings by their IDs. Used for one-time
+// bootstrap and (eventually) the verify-by-id form of full reconcile.
+// Batches into chunks small enough to fit within MLSGrid's URL-length limit
+// for ListingId-in filters. Each batch is one paginated fetch (we expect a
+// single page since chunk <= PAGE_SIZE).
+export async function fetchByIds(rawIds) {
+    if (!Array.isArray(rawIds) || !rawIds.length) {
+        return { items: [], requestCount: 0, requestedIds: [] };
+    }
+    const headers = await authHeader();
+    const ids = rawIds.map(id => normalizeListingId(id));
+    const all = [];
+    let requestCount = 0;
+
+    for (let i = 0; i < ids.length; i += FETCH_BY_ID_BATCH) {
+        const chunk = ids.slice(i, i + FETCH_BY_ID_BATCH);
+        const idList = chunk.map(id => `'${id}'`).join(',');
+        const filter = encodeURIComponent(
+            `OriginatingSystemName eq '${ORIG_SYSTEM}' and ListingId in (${idList})`
+        );
+        let url = `${BASE}?$filter=${filter}&$expand=${EXPAND}&$top=${PAGE_SIZE}`;
+        while (url) {
+            const page = await fetchWithRetry(url, headers);
+            requestCount += 1;
+            if (Array.isArray(page.value)) all.push(...page.value);
+            url = page['@odata.nextLink'] || null;
+        }
+    }
+
+    return { items: all, requestCount, requestedIds: ids };
 }
 
 export async function fetchProperties({ since = null, activeOnly = false } = {}) {

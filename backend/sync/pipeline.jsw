@@ -1,5 +1,5 @@
 import wixData from 'wix-data';
-import { fetchProperties } from 'backend/sync/mlsgrid';
+import { fetchProperties, fetchByIds } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { planIncremental, planFull } from 'backend/sync/diff';
 import { processMediaQueueStep, trashMedia, triggerMediaDrain } from 'backend/sync/media';
@@ -275,6 +275,72 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
     }
 
     return counts;
+}
+
+// One-time population of HousesforSale from an explicit list of MLS IDs.
+// Bypasses the time-based incremental fetch (which would download the entire
+// mfrmls feed) by going straight to ListingId-in queries. After row writes
+// the photo HTTP-chain takes over to drain the gallery uploads in the
+// background. Safe to re-run: planIncremental dedups against existing rows.
+export async function bootstrap(ids) {
+    const startedAt = new Date();
+    const deadline = Date.now() + SOFT_DEADLINE_MS;
+    invalidateVillageCache();
+
+    if (!Array.isArray(ids) || !ids.length) {
+        return { status: 'error', errorMessage: 'no ids provided', startedAt };
+    }
+
+    try {
+        const { items, requestCount, requestedIds } = await fetchByIds(ids);
+
+        let skippedNonLbk = 0;
+        let skippedInactive = 0;
+        let skippedNoVillage = 0;
+        const upserts = [];
+        for (const raw of items) {
+            if (!raw || !raw.ListingId) continue;
+            if ((raw.PostalCity || '').toLowerCase() !== POSTAL_CITY) {
+                skippedNonLbk += 1;
+                continue;
+            }
+            if ((raw.StandardStatus || '').toLowerCase() !== 'active') {
+                skippedInactive += 1;
+                continue;
+            }
+            const village = await matchVillage(raw.SubdivisionName);
+            if (!village) {
+                skippedNoVillage += 1;
+                continue;
+            }
+            upserts.push(transformListing(raw, village));
+        }
+
+        const plan = await planIncremental(upserts, []);
+        const writeCounts = await applyWrites(plan, deadline);
+
+        const counts = {
+            startedAt,
+            mlsGridRequestCount: requestCount,
+            mlsGridListingCount: items.length,
+            ...writeCounts
+        };
+        await recordRun('bootstrap', 'ok', counts);
+        return {
+            status: 'ok',
+            idsRequested: requestedIds.length,
+            rawFetched: items.length,
+            skippedNonLbk,
+            skippedInactive,
+            skippedNoVillage,
+            transformed: upserts.length,
+            ...counts
+        };
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        await recordRun('bootstrap', 'error', { startedAt }, msg);
+        throw err;
+    }
 }
 
 export async function runSync(mode) {
