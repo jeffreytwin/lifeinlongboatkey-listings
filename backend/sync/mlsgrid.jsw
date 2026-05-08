@@ -5,7 +5,6 @@ const BASE = 'https://api.mlsgrid.com/v2/Property';
 const ORIG_SYSTEM = 'mfrmls';
 const LISTING_ID_PREFIX = 'MFR';
 const POSTAL_CITY = 'Longboat Key';
-const POSTAL_CODE = '34228';
 
 function normalizeListingId(listingId) {
     if (!listingId) return listingId;
@@ -46,15 +45,12 @@ async function fetchWithRetry(url, headers, attempt = 0) {
 }
 
 function buildFilter({ since, activeOnly }) {
-    // PostalCity isn't permitted in MLSGrid replication filters, but PostalCode
-    // is. 34228 is exclusively Longboat Key per USPS, so this server-side
-    // filter narrows the fetch from the entire mfrmls feed (tens of thousands
-    // of records) to just LBK. classify() in pipeline.jsw still does a
-    // belt-and-suspenders PostalCity check on the result.
     const parts = [
-        `OriginatingSystemName eq '${ORIG_SYSTEM}'`,
-        `PostalCode eq '${POSTAL_CODE}'`
+        `OriginatingSystemName eq '${ORIG_SYSTEM}'`
     ];
+    // PostalCity is intentionally not filtered server-side. MLSGrid replication
+    // queries restrict the allowed filter fields and PostalCity isn't on the
+    // permitted list, so we filter geographically client-side in pipeline.
     if (since) parts.push(`ModificationTimestamp gt ${since.toISOString()}`);
     if (activeOnly) parts.push(`StandardStatus eq 'Active'`);
     return parts.join(' and ');
