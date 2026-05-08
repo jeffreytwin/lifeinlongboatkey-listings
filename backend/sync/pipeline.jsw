@@ -147,10 +147,13 @@ async function classify(mlsItems) {
     const removalIds = [];
     for (const raw of mlsItems) {
         if (!raw || !raw.ListingId) continue;
-        // PostalCity is filtered client-side: MLSGrid replication queries
-        // restrict allowed filter fields and PostalCity isn't permitted, so the
-        // bulk fetch returns the whole mfrmls feed and we trim here.
-        if ((raw.PostalCity || '').toLowerCase() !== POSTAL_CITY) continue;
+        // mfrmls returns the city as City (matching the old code's data.City
+        // usage); PostalCity is empty in this feed. Filter geographically
+        // client-side because MLSGrid replication queries don't permit any
+        // city/postal field as a server-side filter. Fallback to PostalCity in
+        // case other originating systems populate it instead.
+        const city = (raw.City || raw.PostalCity || '').toLowerCase();
+        if (city !== POSTAL_CITY) continue;
         const status = (raw.StandardStatus || '').toLowerCase();
         if (status === 'active') {
             const village = await matchVillage(raw.SubdivisionName);
@@ -300,7 +303,8 @@ export async function bootstrap(ids) {
         const upserts = [];
         for (const raw of items) {
             if (!raw || !raw.ListingId) continue;
-            if ((raw.PostalCity || '').toLowerCase() !== POSTAL_CITY) {
+            const city = (raw.City || raw.PostalCity || '').toLowerCase();
+            if (city !== POSTAL_CITY) {
                 skippedNonLbk += 1;
                 continue;
             }
