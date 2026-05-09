@@ -195,6 +195,11 @@ function galleryWixSrcs(gallery) {
         .map(i => i.src);
 }
 
+function isGalleryComplete(gallery) {
+    if (!Array.isArray(gallery) || !gallery.length) return false;
+    return gallery.every(g => g && typeof g.src === 'string' && !g.src.startsWith('http'));
+}
+
 function findOrphanedSrcs(prevGallery, nextGallery) {
     const nextSet = new Set(galleryWixSrcs(nextGallery));
     return galleryWixSrcs(prevGallery).filter(src => !nextSet.has(src));
@@ -219,7 +224,11 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
         const record = {
             ...item,
             listingImageGallery: merged,
-            listingPrimaryImage: item.listingPrimaryImage
+            listingPrimaryImage: item.listingPrimaryImage,
+            // New rows are gated until all photos migrate to wix:image://;
+            // visitors don't see an incomplete listing. flushGallery flips
+            // this to true after the last raw https:// item uploads.
+            isPublished: isGalleryComplete(merged)
         };
         try {
             await wixData.insert(COLLECTION, record, { suppressAuth: true });
@@ -233,10 +242,16 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
         const prevGallery = prev && prev.listingImageGallery;
         const merged = mergeGallery(item.listingImageGallery, prevGallery);
         const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
+        const isComplete = isGalleryComplete(merged);
+        const wasPublished = !!(prev && prev.isPublished);
         const record = {
             ...item,
             listingImageGallery: merged,
-            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage
+            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
+            // Sticky-true: live listings stay live during in-flight updates
+            // (some new photos may be raw https:// briefly), but a not-yet
+            // published row only graduates once its gallery is fully wix-hosted.
+            isPublished: isComplete || wasPublished
         };
         try {
             await wixData.update(COLLECTION, record, { suppressAuth: true });
@@ -345,6 +360,37 @@ export async function bootstrap(ids) {
         await recordRun('bootstrap', 'error', { startedAt }, msg);
         throw err;
     }
+}
+
+// One-time backfill for the isPublished gate: walks every HousesforSale row
+// and sets isPublished=true on any row whose gallery is fully migrated. Use
+// after first adding the isPublished field to the schema, otherwise the 11
+// already-complete rows would stay hidden until something else touched them.
+export async function backfillPublishedFlag() {
+    let processed = 0;
+    let updated = 0;
+    let skip = 0;
+    const PAGE = 100;
+    while (true) {
+        const res = await wixData.query(COLLECTION).limit(PAGE).skip(skip).find({ suppressAuth: true });
+        if (!res.items.length) break;
+        for (const row of res.items) {
+            processed += 1;
+            const isComplete = isGalleryComplete(row.listingImageGallery);
+            const wasPublished = !!row.isPublished;
+            const target = isComplete || wasPublished;
+            if (target === wasPublished) continue;
+            try {
+                await wixData.update(COLLECTION, { ...row, isPublished: target }, { suppressAuth: true });
+                updated += 1;
+            } catch (err) {
+                console.log('backfillPublishedFlag failed for', row._id, err && err.message);
+            }
+        }
+        if (res.items.length < PAGE) break;
+        skip += res.items.length;
+    }
+    return { processed, updated };
 }
 
 export async function runSync(mode) {

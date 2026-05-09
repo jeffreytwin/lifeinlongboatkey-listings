@@ -1,5 +1,5 @@
 import wixData from 'wix-data';
-import { runSync, transformListing, mergeGallery, bootstrap } from 'backend/sync/pipeline';
+import { runSync, transformListing, mergeGallery, bootstrap, backfillPublishedFlag } from 'backend/sync/pipeline';
 import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
@@ -102,6 +102,15 @@ export async function testHydrateAndInsertOne(listingId) {
 // self-chain over the following several hours.
 export async function runBootstrap() {
     return bootstrap(BOOTSTRAP_IDS);
+}
+
+// Run once after adding the isPublished field to the HousesforSale schema.
+// Sets isPublished=true on any row whose gallery is already fully migrated
+// (no raw https:// items left). Without this, complete rows that existed
+// before the field was added would stay hidden because their isPublished
+// is empty/false.
+export async function runBackfillPublished() {
+    return backfillPublishedFlag();
 }
 
 export async function testProcessMediaStep() {

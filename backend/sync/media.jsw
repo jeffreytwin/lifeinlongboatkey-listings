@@ -66,11 +66,22 @@ async function findNextRowWithPending() {
 async function flushGallery(target, gallery) {
     const firstWixSrc = gallery.find(g => g && g.src && !g.src.startsWith('http'));
     const newPrimary = firstWixSrc ? firstWixSrc.src : target.listingPrimaryImage;
+    const isComplete = isGalleryComplete(gallery);
+    const wasPublished = !!target.isPublished;
     await wixData.update(COLLECTION, {
         ...target,
         listingImageGallery: gallery,
-        listingPrimaryImage: newPrimary
+        listingPrimaryImage: newPrimary,
+        // Sticky-true: once a row has been published, never un-publish it
+        // mid-update (would yank live listings off the site). New rows reach
+        // isPublished=true the moment the last raw https:// item migrates.
+        isPublished: isComplete || wasPublished
     }, { suppressAuth: true });
+}
+
+function isGalleryComplete(gallery) {
+    if (!Array.isArray(gallery) || !gallery.length) return false;
+    return gallery.every(g => g && typeof g.src === 'string' && !g.src.startsWith('http'));
 }
 
 // Upload pending https:// gallery items to Wix media. Flushes the row every
