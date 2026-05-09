@@ -13,7 +13,12 @@ const FLUSH_EVERY = 5;
 
 const SITE_URL = 'https://www.lifeinlongboatkey.com';
 const CHAIN_ENDPOINT = `${SITE_URL}/_functions/drainMedia`;
-const CHAIN_DISPATCH_TIMEOUT_MS = 200;
+// 5s gives Wix enough time to dispatch the request and receive an initial
+// HTTP ack from the chain endpoint before the parent function is terminated.
+// 200ms wasn't enough - the next link rarely actually started, so the chain
+// was breaking after each invocation and only the hourly cron's tail trigger
+// kept any progress happening.
+const CHAIN_DISPATCH_TIMEOUT_MS = 5000;
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
