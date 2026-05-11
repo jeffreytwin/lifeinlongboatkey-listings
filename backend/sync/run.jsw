@@ -3,6 +3,7 @@ import { runSync, transformListing, mergeGallery, bootstrap, backfillPublishedFl
 import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
+import { drainStaggingFanOut, countPendingStagging, processOneStaggingRow } from 'backend/sync/stagging';
 import { BOOTSTRAP_IDS } from 'backend/sync/bootstrap-ids';
 
 const COLLECTION = 'HousesforSale';
@@ -21,10 +22,19 @@ export function nightlyFull() {
     return runSync('full');
 }
 
+// Hourly cron: drain Stagging via parallel HTTP fan-out. Each fanned-out call
+// gets its own ~59s Wix budget, so this can promote many rows per tick. Also
+// runs the legacy media queue drain for any HousesforSale rows that picked up
+// pending photos through a toUpdate path.
 export async function processMediaStep() {
-    const result = await processMediaQueueStep(Date.now() + TEST_PANEL_DEADLINE_MS);
-    if (result.remaining) await triggerMediaDrain();
-    return result;
+    const deadline = Date.now() + TEST_PANEL_DEADLINE_MS;
+    const fan = await drainStaggingFanOut(deadline);
+    let queue = { processed: 0, failed: 0, remaining: false };
+    if (Date.now() < deadline) {
+        queue = await processMediaQueueStep(deadline);
+        if (queue.remaining) await triggerMediaDrain();
+    }
+    return { stagging: fan, mediaQueue: queue };
 }
 
 export async function testPeekFeed() {
@@ -40,10 +50,9 @@ export async function testDebugHydrate(listingId) {
     return results;
 }
 
-// Fetches one MLSGrid listing, upserts it into HousesforSale with the merged
-// gallery (raw https:// URLs for any new photos), then drains as many of the
-// pending photos as our test-panel budget allows. Subsequent runs (or the
-// hourly cron) finish the rest.
+// Fetches one MLSGrid listing, writes it to Stagging, then triggers the
+// Stagging drain so it gets fully processed and promoted to HousesforSale in
+// the same invocation (within budget).
 export async function testHydrateAndInsertOne(listingId) {
     const id = listingId || DEFAULT_TEST_LISTING_ID;
     invalidateVillageCache();
@@ -63,17 +72,27 @@ export async function testHydrateAndInsertOne(listingId) {
     const prevGallery = existing && existing.listingImageGallery;
 
     const merged = await mergeGallery(item.listingImageGallery, prevGallery);
-    const firstWixSrc = merged.find(g => g && g.src && !g.src.startsWith('http'));
-    const record = {
-        ...item,
-        listingImageGallery: merged,
-        listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
-    };
 
     if (existing) {
-        await wixData.update(COLLECTION, record, { suppressAuth: true });
+        // Already live in HousesforSale - update in place.
+        const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
+        await wixData.update(COLLECTION, {
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
+            isPublished: existing.isPublished
+        }, { suppressAuth: true });
     } else {
-        await wixData.insert(COLLECTION, record, { suppressAuth: true });
+        // New listing - go through Stagging.
+        await wixData.insert('Stagging', {
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: item.listingPrimaryImage,
+            isPublished: false
+        }, { suppressAuth: true });
+        // Process the row now so we promote within this invocation.
+        const result = await processOneStaggingRow(item._id);
+        return { ok: true, listingId: id, ...result };
     }
 
     const queueResult = await processMediaQueueStep(Date.now() + TEST_PANEL_DEADLINE_MS);
@@ -81,36 +100,55 @@ export async function testHydrateAndInsertOne(listingId) {
 
     return {
         ok: true,
-        action: existing ? 'updated' : 'inserted',
+        action: 'updated',
         listingId: id,
-        storedId: record._id,
+        storedId: item._id,
         subdivision: raw.SubdivisionName,
         village: village.villageName,
-        price: record.listingPrice,
+        price: item.listingPrice,
         gallerySize: merged.length,
         imagesUploaded: queueResult.processed,
-        imagesFailed: queueResult.failed,
-        imagesRemaining: queueResult.remaining,
-        chained: !!queueResult.remaining
+        imagesFailed: queueResult.failed
     };
 }
 
-// One-time population of HousesforSale from the bootstrap-ids master list.
-// The test panel will likely 504 because we're inserting up to 350 rows in
-// one invocation, but the work continues server-side; check SyncRuns and
-// HousesforSale to see progress. Photo uploads then drain via the HTTP
-// self-chain over the following several hours.
+// One-time population from the bootstrap-ids master list. Now routes new
+// rows through Stagging (per applyWrites), so the bootstrap promotes rows to
+// HousesforSale only as photos finish - visitors never see incomplete rows.
 export async function runBootstrap() {
     return bootstrap(BOOTSTRAP_IDS);
 }
 
-// Run once after adding the isPublished field to the HousesforSale schema.
-// Sets isPublished=true on any row whose gallery is already fully migrated
-// (no raw https:// items left). Without this, complete rows that existed
-// before the field was added would stay hidden because their isPublished
-// is empty/false.
+// One-time backfill: sets isPublished=true on HousesforSale rows whose
+// galleries are already fully wix-hosted. Useful after schema changes or when
+// rows were promoted by external paths (the old dashboard).
 export async function runBackfillPublished() {
     return backfillPublishedFlag();
+}
+
+// Manual drain trigger. Use this if you want to force the Stagging drain
+// outside the hourly cron - the cron will hit the same code path on its own
+// schedule, but this lets you make progress faster during catch-up.
+export async function testDrainStagging() {
+    const deadline = Date.now() + TEST_PANEL_DEADLINE_MS;
+    const result = await drainStaggingFanOut(deadline);
+    console.log('[testDrainStagging]', result);
+    return result;
+}
+
+// Tracking helper - returns the three counts you care about: pending in
+// Stagging, live in HousesforSale, total. Use this in a status display or
+// just call it from the test panel to verify the system is making progress.
+export async function getSyncStatus() {
+    const pendingStagging = await countPendingStagging();
+    const liveHouses = await wixData.query(COLLECTION).count({ suppressAuth: true }).catch(() => 0);
+    const publishedHouses = await wixData.query(COLLECTION).eq('isPublished', true).count({ suppressAuth: true }).catch(() => liveHouses);
+    return {
+        pendingStagging,
+        liveHouses,
+        publishedHouses,
+        total: pendingStagging + liveHouses
+    };
 }
 
 export async function testProcessMediaStep() {

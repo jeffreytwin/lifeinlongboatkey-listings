@@ -3,6 +3,7 @@ import { getSecret } from 'wix-secrets-backend';
 import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
 import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
+import { processOneStaggingRow } from 'backend/sync/stagging';
 import { seedVillages } from 'backend/seed-villages';
 
 const CHAIN_DEADLINE_MS = 50 * 1000;
@@ -63,6 +64,23 @@ export async function post_drainMedia(request) {
         const result = await processMediaQueueStep(Date.now() + CHAIN_DEADLINE_MS);
         if (result.remaining) await triggerMediaDrain();
         return jsonResponse(200, { ...result, chained: !!result.remaining });
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Process one Stagging row: upload all its pending photos via internal
+// Promise.all parallelism, promote to HousesforSale when the gallery is
+// fully wix-hosted. Called concurrently by the hourly cron's drain fan-out -
+// each invocation here gets its own ~59s Wix budget, which is the whole point
+// of doing this via HTTP instead of a single backend loop.
+export async function post_processStaggingRow(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const body = await request.body.json();
+        if (!body || !body.rowId) return badRequest({ body: 'rowId required' });
+        const result = await processOneStaggingRow(body.rowId);
+        return jsonResponse(200, result);
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });
     }

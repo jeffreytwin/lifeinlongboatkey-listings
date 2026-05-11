@@ -3,8 +3,10 @@ import { fetchProperties, fetchByIds } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { planIncremental, planFull } from 'backend/sync/diff';
 import { processMediaQueueStep, trashMedia, triggerMediaDrain } from 'backend/sync/media';
+import { drainStaggingFanOut } from 'backend/sync/stagging';
 
 const COLLECTION = 'HousesforSale';
+const STAGGING = 'Stagging';
 const RUNS = 'SyncRuns';
 const POSTAL_CITY = 'longboat key';
 const SOFT_DEADLINE_MS = 50 * 1000;
@@ -116,6 +118,7 @@ async function recordRun(mode, status, counts, errorMessage) {
         inserted: counts.inserted || 0,
         updated: counts.updated || 0,
         deleted: counts.deleted || 0,
+        promoted: counts.promoted || 0,
         imagesUploaded: counts.imagesUploaded || 0,
         imagesFailed: counts.imagesFailed || 0,
         imagesTrashed: counts.imagesTrashed || 0,
@@ -205,17 +208,23 @@ function findOrphanedSrcs(prevGallery, nextGallery) {
     return galleryWixSrcs(prevGallery).filter(src => !nextSet.has(src));
 }
 
-// Two-phase write:
-//   1) Row state changes (insert/update/delete) using the merged gallery.
-//      Gallery items that already have wix:image:// srcs are kept; new
-//      photos go in as raw https:// URLs. This phase is fast and always
-//      durable.
-//   2) Drain the photo queue with whatever budget remains. The queue worker
-//      flushes every 5 successful uploads so progress survives a function
-//      kill mid-loop.
+// Three-phase write:
+//   1) Row state changes:
+//      - toInsert -> Stagging (new listings sit in Stagging until photos done)
+//      - toUpdate -> HousesforSale in place (live listings stay live)
+//      - toDelete -> HousesforSale remove + media trash
+//      All fast and always durable.
+//   2) Drain Stagging via HTTP fan-out: parallel Promise.all of fetch calls
+//      to /_functions/processStaggingRow, each with its own fresh ~59s Wix
+//      invocation budget. The per-row endpoint uploads all photos for one
+//      row (internal Promise.all of 10) and promotes the row to
+//      HousesforSale when its gallery is fully wix-hosted.
+//   3) (Legacy) drain any HousesforSale rows with leftover pending photos
+//      via the internal media queue. In steady state this is a no-op
+//      because new rows go through Stagging.
 async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
     const counts = {
-        inserted: 0, updated: 0, deleted: 0,
+        inserted: 0, updated: 0, deleted: 0, promoted: 0,
         imagesUploaded: 0, imagesFailed: 0, imagesTrashed: 0
     };
 
@@ -225,16 +234,13 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
             ...item,
             listingImageGallery: merged,
             listingPrimaryImage: item.listingPrimaryImage,
-            // New rows are gated until all photos migrate to wix:image://;
-            // visitors don't see an incomplete listing. flushGallery flips
-            // this to true after the last raw https:// item uploads.
-            isPublished: isGalleryComplete(merged)
+            isPublished: false
         };
         try {
-            await wixData.insert(COLLECTION, record, { suppressAuth: true });
+            await wixData.insert(STAGGING, record, { suppressAuth: true });
             counts.inserted += 1;
         } catch (err) {
-            console.log('insert failed for', item._id, err && err.message);
+            console.log('Stagging insert failed for', item._id, err && err.message);
         }
     }
 
@@ -248,9 +254,6 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
             ...item,
             listingImageGallery: merged,
             listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
-            // Sticky-true: live listings stay live during in-flight updates
-            // (some new photos may be raw https:// briefly), but a not-yet
-            // published row only graduates once its gallery is fully wix-hosted.
             isPublished: isComplete || wasPublished
         };
         try {
@@ -281,15 +284,26 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
         }
     }
 
+    // Phase 2: drain Stagging via parallel HTTP fan-out. Each per-row HTTP
+    // call gets its own Wix invocation budget, so this gives real concurrency
+    // instead of the single-process Promise.all ceiling. Cron awaits each
+    // fetch (not fire-and-forget), so dispatch is deterministic.
+    if (Date.now() < deadline) {
+        const fanResult = await drainStaggingFanOut(deadline);
+        counts.promoted += fanResult.promoted || 0;
+        counts.imagesUploaded += fanResult.processed || 0;
+        counts.imagesFailed += fanResult.failed || 0;
+    }
+
+    // Phase 3: legacy HousesforSale photo drain. Should be a no-op in steady
+    // state because new rows go through Stagging, but handles any leftover
+    // rows from before the Stagging gate was added or photos added via
+    // toUpdate that need migrating.
     if (Date.now() < deadline) {
         const queueResult = await processMediaQueueStep(deadline);
         counts.imagesUploaded += queueResult.processed || 0;
         counts.imagesFailed += queueResult.failed || 0;
         if (queueResult.remaining) await triggerMediaDrain();
-    } else {
-        // Out of inline budget; hand off to the HTTP chain to drain whatever
-        // is still pending in fresh per-invocation budgets.
-        await triggerMediaDrain();
     }
 
     return counts;
