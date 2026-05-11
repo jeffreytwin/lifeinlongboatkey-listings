@@ -2,7 +2,11 @@ import { ok, badRequest, forbidden, serverError, response } from 'wix-http-funct
 import { getSecret } from 'wix-secrets-backend';
 import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
-import { seedVillages } from 'backend/seed-villages';
+import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
+import { processOneStaggingRow } from 'backend/sync/stagging';
+import { seedVillages } from 'backend/sync/seed';
+
+const CHAIN_DEADLINE_MS = 50 * 1000;
 
 async function authorized(request) {
     try {
@@ -44,6 +48,38 @@ export async function post_seedVillages(request) {
     if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
     try {
         const result = await seedVillages();
+        return jsonResponse(200, result);
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Drains photo-upload queue for one ~50s budget, then if the queue still has
+// pending items fires off the next link of the chain. Each link gets a fresh
+// Wix invocation budget, so a long backlog drains continuously without any
+// single function exceeding the per-call timeout.
+export async function post_drainMedia(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const result = await processMediaQueueStep(Date.now() + CHAIN_DEADLINE_MS);
+        if (result.remaining) await triggerMediaDrain();
+        return jsonResponse(200, { ...result, chained: !!result.remaining });
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Process one Stagging row: upload all its pending photos via internal
+// Promise.all parallelism, promote to HousesforSale when the gallery is
+// fully wix-hosted. Called concurrently by the hourly cron's drain fan-out -
+// each invocation here gets its own ~59s Wix budget, which is the whole point
+// of doing this via HTTP instead of a single backend loop.
+export async function post_processStaggingRow(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const body = await request.body.json();
+        if (!body || !body.rowId) return badRequest({ body: 'rowId required' });
+        const result = await processOneStaggingRow(body.rowId);
         return jsonResponse(200, result);
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });

@@ -1,11 +1,15 @@
 import wixData from 'wix-data';
-import { fetchProperties } from 'backend/sync/mlsgrid';
+import { fetchProperties, fetchByIds } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { planIncremental, planFull } from 'backend/sync/diff';
+import { processMediaQueueStep, trashMedia, triggerMediaDrain } from 'backend/sync/media';
+import { drainStaggingFanOut } from 'backend/sync/stagging';
 
 const COLLECTION = 'HousesforSale';
+const STAGGING = 'Stagging';
 const RUNS = 'SyncRuns';
 const POSTAL_CITY = 'longboat key';
+const SOFT_DEADLINE_MS = 50 * 1000;
 
 // Inlined transform. Wix's module cache for a separate transform.jsw kept
 // returning an empty stub even when the source was correct, so the function
@@ -114,6 +118,11 @@ async function recordRun(mode, status, counts, errorMessage) {
         inserted: counts.inserted || 0,
         updated: counts.updated || 0,
         deleted: counts.deleted || 0,
+        promoted: counts.promoted || 0,
+        imagesUploaded: counts.imagesUploaded || 0,
+        imagesFailed: counts.imagesFailed || 0,
+        imagesTrashed: counts.imagesTrashed || 0,
+        datesRefreshed: counts.datesRefreshed || 0,
         mlsGridRequestCount: counts.mlsGridRequestCount || 0,
         mlsGridListingCount: counts.mlsGridListingCount || 0,
         errorMessage: errorMessage || null
@@ -142,66 +151,39 @@ async function classify(mlsItems) {
     const removalIds = [];
     for (const raw of mlsItems) {
         if (!raw || !raw.ListingId) continue;
-        // PostalCity is filtered client-side: MLSGrid replication queries
-        // restrict allowed filter fields and PostalCity isn't permitted, so the
-        // bulk fetch returns the whole mfrmls feed and we trim here.
-        if ((raw.PostalCity || '').toLowerCase() !== POSTAL_CITY) continue;
+        // mfrmls returns the city as City (matching the old code's data.City
+        // usage); PostalCity is empty in this feed. Filter geographically
+        // client-side because MLSGrid replication queries don't permit any
+        // city/postal field as a server-side filter. Fallback to PostalCity in
+        // case other originating systems populate it instead.
+        const city = (raw.City || raw.PostalCity || '').toLowerCase();
+        if (city !== POSTAL_CITY) continue;
+
         const status = (raw.StandardStatus || '').toLowerCase();
-        if (status === 'active') {
-            const village = await matchVillage(raw.SubdivisionName);
-            if (!village) continue;
-            upsertRaw.push({ raw, village });
-        } else {
+        if (status !== 'active') {
+            // Status change away from Active (Sold, Pending, Withdrawn, etc.):
+            // route to removal so the existing HousesforSale row gets deleted
+            // along with its media.
             removalIds.push(raw.ListingId);
+            continue;
         }
+
+        // Active LBK listing must match a known village or it can't appear on
+        // the site. If matchVillage returns null and the listing was
+        // previously in HousesforSale (e.g. its SubdivisionName changed to
+        // something we don't recognize), route to removal so planIncremental
+        // deletes the stale row and trashes its photos. New listings with no
+        // village match are filtered out naturally because they're not
+        // already present.
+        const village = await matchVillage(raw.SubdivisionName);
+        if (!village) {
+            removalIds.push(raw.ListingId);
+            continue;
+        }
+
+        upsertRaw.push({ raw, village });
     }
     return { upsertRaw, removalIds };
-}
-
-async function applyWrites({ toInsert, toUpdate, toDelete }) {
-    const counts = { inserted: 0, updated: 0, deleted: 0 };
-
-    // Photos are stored as raw MLSGrid https URLs; processMediaQueueStep
-    // swaps them for Wix media URLs over many small invocations so the data
-    // path doesn't compete with media uploads for the backend timeout.
-    for (const item of toInsert) {
-        try {
-            await wixData.insert(COLLECTION, item, { suppressAuth: true });
-            counts.inserted += 1;
-        } catch (err) {
-            console.log('insert failed for', item._id, err && err.message);
-        }
-    }
-
-    // For updates, merge incoming MLS photo URLs with what's already on the
-    // row: if a photo with the same MLS source URL is already uploaded to Wix
-    // and its MLS modification timestamp matches, keep the wix:image:// src so
-    // the queue worker doesn't have to re-upload it next pass.
-    for (const { item, prev } of toUpdate) {
-        const merged = mergeGallery(item.listingImageGallery, prev && prev.listingImageGallery);
-        const firstWixSrc = merged.find(g => g && g.src && !g.src.startsWith('http'));
-        const record = {
-            ...item,
-            listingImageGallery: merged,
-            listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
-        };
-        try {
-            await wixData.update(COLLECTION, record, { suppressAuth: true });
-            counts.updated += 1;
-        } catch (err) {
-            console.log('update failed for', item._id, err && err.message);
-        }
-    }
-
-    for (const prev of toDelete) {
-        try {
-            await wixData.remove(COLLECTION, prev._id, { suppressAuth: true });
-            counts.deleted += 1;
-        } catch (err) {
-            console.log('remove failed for', prev._id, err && err.message);
-        }
-    }
-    return counts;
 }
 
 function sameTimestamp(a, b) {
@@ -226,16 +208,307 @@ export function mergeGallery(incoming, existing) {
     });
 }
 
+function galleryWixSrcs(gallery) {
+    if (!Array.isArray(gallery)) return [];
+    return gallery
+        .filter(i => i && typeof i.src === 'string' && !i.src.startsWith('http'))
+        .map(i => i.src);
+}
+
+function isGalleryComplete(gallery) {
+    if (!Array.isArray(gallery) || !gallery.length) return false;
+    return gallery.every(g => g && typeof g.src === 'string' && !g.src.startsWith('http'));
+}
+
+function findOrphanedSrcs(prevGallery, nextGallery) {
+    const nextSet = new Set(galleryWixSrcs(nextGallery));
+    return galleryWixSrcs(prevGallery).filter(src => !nextSet.has(src));
+}
+
+// Three-phase write:
+//   1) Row state changes:
+//      - toInsert -> Stagging (new listings sit in Stagging until photos done)
+//      - toUpdate -> HousesforSale in place (live listings stay live)
+//      - toDelete -> HousesforSale remove + media trash
+//      All fast and always durable.
+//   2) Drain Stagging via HTTP fan-out: parallel Promise.all of fetch calls
+//      to /_functions/processStaggingRow, each with its own fresh ~59s Wix
+//      invocation budget. The per-row endpoint uploads all photos for one
+//      row (internal Promise.all of 10) and promotes the row to
+//      HousesforSale when its gallery is fully wix-hosted.
+//   3) (Legacy) drain any HousesforSale rows with leftover pending photos
+//      via the internal media queue. In steady state this is a no-op
+//      because new rows go through Stagging.
+async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
+    const counts = {
+        inserted: 0, updated: 0, deleted: 0, promoted: 0,
+        imagesUploaded: 0, imagesFailed: 0, imagesTrashed: 0
+    };
+
+    for (const item of toInsert) {
+        const merged = mergeGallery(item.listingImageGallery, []);
+        const record = {
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: item.listingPrimaryImage,
+            isPublished: false
+        };
+        try {
+            await wixData.insert(STAGGING, record, { suppressAuth: true });
+            counts.inserted += 1;
+        } catch (err) {
+            console.log('Stagging insert failed for', item._id, err && err.message);
+        }
+    }
+
+    for (const { item, prev } of toUpdate) {
+        const prevGallery = prev && prev.listingImageGallery;
+        const merged = mergeGallery(item.listingImageGallery, prevGallery);
+        const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
+        const isComplete = isGalleryComplete(merged);
+        const wasPublished = !!(prev && prev.isPublished);
+        const record = {
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
+            isPublished: isComplete || wasPublished
+        };
+        try {
+            await wixData.update(COLLECTION, record, { suppressAuth: true });
+            counts.updated += 1;
+        } catch (err) {
+            console.log('update failed for', item._id, err && err.message);
+        }
+
+        const orphaned = findOrphanedSrcs(prevGallery, merged);
+        if (orphaned.length) {
+            await trashMedia(orphaned);
+            counts.imagesTrashed += orphaned.length;
+        }
+    }
+
+    for (const prev of toDelete) {
+        const wixSrcs = galleryWixSrcs(prev.listingImageGallery);
+        try {
+            await wixData.remove(COLLECTION, prev._id, { suppressAuth: true });
+            counts.deleted += 1;
+        } catch (err) {
+            console.log('remove failed for', prev._id, err && err.message);
+        }
+        if (wixSrcs.length) {
+            await trashMedia(wixSrcs);
+            counts.imagesTrashed += wixSrcs.length;
+        }
+    }
+
+    // Phase 2: drain Stagging via parallel HTTP fan-out. Each per-row HTTP
+    // call gets its own Wix invocation budget, so this gives real concurrency
+    // instead of the single-process Promise.all ceiling. Cron awaits each
+    // fetch (not fire-and-forget), so dispatch is deterministic.
+    if (Date.now() < deadline) {
+        const fanResult = await drainStaggingFanOut(deadline);
+        counts.promoted += fanResult.promoted || 0;
+        counts.imagesUploaded += fanResult.processed || 0;
+        counts.imagesFailed += fanResult.failed || 0;
+    }
+
+    // Phase 3: legacy HousesforSale photo drain. Should be a no-op in steady
+    // state because new rows go through Stagging, but handles any leftover
+    // rows from before the Stagging gate was added or photos added via
+    // toUpdate that need migrating.
+    if (Date.now() < deadline) {
+        const queueResult = await processMediaQueueStep(deadline);
+        counts.imagesUploaded += queueResult.processed || 0;
+        counts.imagesFailed += queueResult.failed || 0;
+        if (queueResult.remaining) await triggerMediaDrain();
+    }
+
+    return counts;
+}
+
+// One-time population of HousesforSale from an explicit list of MLS IDs.
+// Bypasses the time-based incremental fetch (which would download the entire
+// mfrmls feed) by going straight to ListingId-in queries. After row writes
+// the photo HTTP-chain takes over to drain the gallery uploads in the
+// background. Safe to re-run: planIncremental dedups against existing rows.
+export async function bootstrap(ids) {
+    const startedAt = new Date();
+    const deadline = Date.now() + SOFT_DEADLINE_MS;
+    invalidateVillageCache();
+
+    if (!Array.isArray(ids) || !ids.length) {
+        return { status: 'error', errorMessage: 'no ids provided', startedAt };
+    }
+
+    try {
+        const { items, requestCount, requestedIds } = await fetchByIds(ids);
+
+        let skippedNonLbk = 0;
+        let skippedInactive = 0;
+        let skippedNoVillage = 0;
+        const upserts = [];
+        for (const raw of items) {
+            if (!raw || !raw.ListingId) continue;
+            const city = (raw.City || raw.PostalCity || '').toLowerCase();
+            if (city !== POSTAL_CITY) {
+                skippedNonLbk += 1;
+                continue;
+            }
+            if ((raw.StandardStatus || '').toLowerCase() !== 'active') {
+                skippedInactive += 1;
+                continue;
+            }
+            const village = await matchVillage(raw.SubdivisionName);
+            if (!village) {
+                skippedNoVillage += 1;
+                continue;
+            }
+            upserts.push(transformListing(raw, village));
+        }
+
+        const plan = await planIncremental(upserts, []);
+        const writeCounts = await applyWrites(plan, deadline);
+
+        const counts = {
+            startedAt,
+            mlsGridRequestCount: requestCount,
+            mlsGridListingCount: items.length,
+            ...writeCounts
+        };
+        await recordRun('bootstrap', 'ok', counts);
+        return {
+            status: 'ok',
+            idsRequested: requestedIds.length,
+            rawFetched: items.length,
+            skippedNonLbk,
+            skippedInactive,
+            skippedNoVillage,
+            transformed: upserts.length,
+            ...counts
+        };
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        await recordRun('bootstrap', 'error', { startedAt }, msg);
+        throw err;
+    }
+}
+
+// One-time backfill for the isPublished gate: walks every HousesforSale row
+// and sets isPublished=true on any row whose gallery is fully migrated. Use
+// after first adding the isPublished field to the schema, otherwise the 11
+// already-complete rows would stay hidden until something else touched them.
+export async function backfillPublishedFlag() {
+    let processed = 0;
+    let updated = 0;
+    let skip = 0;
+    const PAGE = 100;
+    while (true) {
+        const res = await wixData.query(COLLECTION).limit(PAGE).skip(skip).find({ suppressAuth: true });
+        if (!res.items.length) break;
+        for (const row of res.items) {
+            processed += 1;
+            const isComplete = isGalleryComplete(row.listingImageGallery);
+            const wasPublished = !!row.isPublished;
+            const target = isComplete || wasPublished;
+            if (target === wasPublished) continue;
+            try {
+                await wixData.update(COLLECTION, { ...row, isPublished: target }, { suppressAuth: true });
+                updated += 1;
+            } catch (err) {
+                console.log('backfillPublishedFlag failed for', row._id, err && err.message);
+            }
+        }
+        if (res.items.length < PAGE) break;
+        skip += res.items.length;
+    }
+    return { processed, updated };
+}
+
+async function fetchAllCollectionIds(collectionName) {
+    const all = [];
+    let skip = 0;
+    const pageSize = 1000;
+    while (true) {
+        const res = await wixData.query(collectionName)
+            .fields('_id').limit(pageSize).skip(skip)
+            .find({ suppressAuth: true });
+        for (const item of res.items) all.push(item._id);
+        if (res.items.length < pageSize) break;
+        skip += pageSize;
+    }
+    return all;
+}
+
+// Bulk-refresh dateOfMlsPull on every HousesforSale row. MLSGrid compliance
+// requires that we reflect a fresh "last pulled" timestamp at least every
+// 12 hours; the per-row transformListing only updates this on changed rows,
+// so we sweep the whole collection at the end of every runSync to keep
+// untouched rows from going stale. wixData.bulkUpdate handles ~100 rows
+// per call; 324 rows is ~4 chunks, a couple of seconds total.
+async function refreshAllDateOfMlsPull(deadline) {
+    const now = new Date();
+    let totalUpdated = 0;
+    const PAGE = 100;
+    let skip = 0;
+    while (Date.now() < deadline) {
+        const res = await wixData.query(COLLECTION)
+            .limit(PAGE).skip(skip)
+            .find({ suppressAuth: true });
+        if (!res.items.length) break;
+        const updates = res.items.map(item => ({ ...item, dateOfMlsPull: now }));
+        try {
+            const bulk = await wixData.bulkUpdate(COLLECTION, updates, { suppressAuth: true });
+            totalUpdated += (bulk && bulk.updated) != null ? bulk.updated : updates.length;
+        } catch (err) {
+            console.log('refreshAllDateOfMlsPull failed at skip', skip, err && err.message);
+        }
+        if (res.items.length < PAGE) break;
+        skip += res.items.length;
+    }
+    return totalUpdated;
+}
+
 export async function runSync(mode) {
     const startedAt = new Date();
+    const deadline = Date.now() + SOFT_DEADLINE_MS;
     invalidateVillageCache();
 
     try {
-        const fetchOpts = mode === 'full'
-            ? { activeOnly: true }
-            : { since: await getLastSuccessfulRunAt(), activeOnly: false };
+        let items;
+        let requestCount;
+        let expectedCount;
 
-        const { items, requestCount, expectedCount } = await fetchProperties(fetchOpts);
+        if (mode === 'full') {
+            // Verify-by-id: walk every HousesforSale ID and fetch its current
+            // MLS state in batches. Bounded by our row count (~324), not by
+            // the entire mfrmls feed - fits comfortably in budget. planFull
+            // then diffs the result against HousesforSale:
+            //   - toDelete: rows in HousesforSale not present in our
+            //     upserts list. Catches every removal case at once:
+            //     silent fall-outs from MLS, status changes to non-Active,
+            //     city changes away from LBK, subdivision changes that no
+            //     longer match a village.
+            //   - toUpdate: rows still active with meaningful changes.
+            //   - toInsert: naturally empty (we only fetched IDs we already
+            //     have). Hourly incremental handles additions.
+            const houseIds = await fetchAllCollectionIds(COLLECTION);
+            if (houseIds.length === 0) {
+                items = [];
+                requestCount = 0;
+            } else {
+                const verify = await fetchByIds(houseIds);
+                items = verify.items;
+                requestCount = verify.requestCount;
+            }
+            expectedCount = items.length;
+        } else {
+            const fetchOpts = { since: await getLastSuccessfulRunAt(), activeOnly: false };
+            const r = await fetchProperties(fetchOpts);
+            items = r.items;
+            requestCount = r.requestCount;
+            expectedCount = r.expectedCount;
+        }
+
         const { upsertRaw, removalIds } = await classify(items);
         const upserts = upsertRaw.map(({ raw, village }) => transformListing(raw, village));
 
@@ -243,12 +516,22 @@ export async function runSync(mode) {
             ? await planFull(upserts)
             : await planIncremental(upserts, removalIds);
 
-        const writeCounts = await applyWrites(plan);
+        const writeCounts = await applyWrites(plan, deadline);
+
+        // MLSGrid compliance: every HousesforSale row must show a fresh
+        // dateOfMlsPull at least every 12 hours. transformListing only
+        // refreshes rows we wrote in this run, so do a sweep here to keep
+        // untouched rows from going stale.
+        let datesRefreshed = 0;
+        if (Date.now() < deadline) {
+            datesRefreshed = await refreshAllDateOfMlsPull(deadline);
+        }
 
         const counts = {
             startedAt,
             mlsGridRequestCount: requestCount,
             mlsGridListingCount: expectedCount != null ? expectedCount : items.length,
+            datesRefreshed,
             ...writeCounts
         };
         await recordRun(mode, 'ok', counts);

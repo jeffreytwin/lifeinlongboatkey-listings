@@ -1,12 +1,31 @@
 import wixData from 'wix-data';
 import { mediaManager } from 'wix-media-backend';
+import { fetch } from 'wix-fetch';
+import { getSecret } from 'wix-secrets-backend';
 const dataURLdecoder = require('image-data-uri');
 
 const COLLECTION = 'HousesforSale';
 const UPLOAD_FOLDER = '/JeffUploadsNew';
 const MAX_ATTEMPTS = 3;
-const QUEUE_SCAN_LIMIT = 50;
-const PHOTOS_PER_STEP = 5;
+const QUEUE_SCAN_LIMIT = 200;
+const DEFAULT_DEADLINE_MS = 50 * 1000;
+const FLUSH_EVERY = 5;
+// Photos upload in parallel via Promise.all instead of one-at-a-time. Each
+// upload is HTTP-bound (MLSGrid GET + Wix media POST), so concurrent in-flight
+// requests share the wall clock; ~3s per upload becomes ~3s for the whole
+// batch. PARALLEL_UPLOADS=10 is conservative - browsers and servers commonly
+// allow 100+ concurrent HTTP/2 requests, so we could push higher, but 10 is
+// already a 10x throughput improvement over the old serial loop.
+const PARALLEL_UPLOADS = 10;
+
+const SITE_URL = 'https://www.lifeinlongboatkey.com';
+const CHAIN_ENDPOINT = `${SITE_URL}/_functions/drainMedia`;
+// 5s gives Wix enough time to dispatch the request and receive an initial
+// HTTP ack from the chain endpoint before the parent function is terminated.
+// 200ms wasn't enough - the next link rarely actually started, so the chain
+// was breaking after each invocation and only the hourly cron's tail trigger
+// kept any progress happening.
+const CHAIN_DISPATCH_TIMEOUT_MS = 5000;
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -21,7 +40,7 @@ async function uploadOne(url) {
     return fileInfo.fileUrl;
 }
 
-async function uploadWithRetry(url) {
+export async function uploadWithRetry(url) {
     let lastErr;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         try {
@@ -43,48 +62,125 @@ function findPendingIndex(gallery) {
     return gallery.findIndex(isPendingItem);
 }
 
-export async function processMediaQueueStep() {
+async function findNextRowWithPending() {
     const res = await wixData.query(COLLECTION)
         .descending('_createdDate')
         .limit(QUEUE_SCAN_LIMIT)
         .find({ suppressAuth: true });
+    return res.items.find(row => findPendingIndex(row.listingImageGallery) >= 0) || null;
+}
 
-    const target = res.items.find(row => findPendingIndex(row.listingImageGallery) >= 0);
-    if (!target) return { processed: 0, failed: 0, listingId: null, message: 'no pending media' };
-
-    const gallery = [...(target.listingImageGallery || [])];
-    let processed = 0;
-    let failed = 0;
-
-    for (let i = 0; i < gallery.length && processed + failed < PHOTOS_PER_STEP; i++) {
-        const item = gallery[i];
-        if (!isPendingItem(item)) continue;
-        const mlsUrl = item.src;
-        try {
-            const wixUrl = await uploadWithRetry(mlsUrl);
-            gallery[i] = { ...item, src: wixUrl, mlsSourceUrl: mlsUrl };
-            processed += 1;
-        } catch (err) {
-            console.log('processMediaQueueStep upload failed', mlsUrl, err && err.message);
-            failed += 1;
-        }
-    }
-
+async function flushGallery(target, gallery) {
     const firstWixSrc = gallery.find(g => g && g.src && !g.src.startsWith('http'));
     const newPrimary = firstWixSrc ? firstWixSrc.src : target.listingPrimaryImage;
-
+    const isComplete = isGalleryComplete(gallery);
+    const wasPublished = !!target.isPublished;
     await wixData.update(COLLECTION, {
         ...target,
         listingImageGallery: gallery,
-        listingPrimaryImage: newPrimary
+        listingPrimaryImage: newPrimary,
+        // Sticky-true: once a row has been published, never un-publish it
+        // mid-update (would yank live listings off the site). New rows reach
+        // isPublished=true the moment the last raw https:// item migrates.
+        isPublished: isComplete || wasPublished
     }, { suppressAuth: true });
+}
 
+function isGalleryComplete(gallery) {
+    if (!Array.isArray(gallery) || !gallery.length) return false;
+    return gallery.every(g => g && typeof g.src === 'string' && !g.src.startsWith('http'));
+}
+
+// Upload pending https:// gallery items to Wix media. Uploads run in parallel
+// batches of PARALLEL_UPLOADS via Promise.all (~10x faster than serial), and
+// the row is flushed after each batch so progress is durable even if Wix
+// kills the function mid-loop. Loops across rows until the deadline is
+// reached or no pending media remain.
+export async function processMediaQueueStep(deadline) {
+    const effectiveDeadline = deadline || (Date.now() + DEFAULT_DEADLINE_MS);
+    let totalProcessed = 0;
+    let totalFailed = 0;
+    let lastListingId = null;
+
+    while (Date.now() < effectiveDeadline) {
+        const target = await findNextRowWithPending();
+        if (!target) break;
+        lastListingId = target._id;
+
+        const gallery = [...(target.listingImageGallery || [])];
+        const pendingIdxs = [];
+        for (let i = 0; i < gallery.length; i++) {
+            if (isPendingItem(gallery[i])) pendingIdxs.push(i);
+        }
+
+        for (let b = 0; b < pendingIdxs.length && Date.now() < effectiveDeadline; b += PARALLEL_UPLOADS) {
+            const batch = pendingIdxs.slice(b, b + PARALLEL_UPLOADS);
+            const results = await Promise.all(batch.map(async (idx) => {
+                const item = gallery[idx];
+                const mlsUrl = item.src;
+                try {
+                    const wixUrl = await uploadWithRetry(mlsUrl);
+                    return { idx, wixUrl, mlsUrl, ok: true };
+                } catch (err) {
+                    console.log('processMediaQueueStep upload failed', mlsUrl, err && err.message);
+                    return { idx, ok: false };
+                }
+            }));
+            for (const r of results) {
+                if (r.ok) {
+                    gallery[r.idx] = { ...gallery[r.idx], src: r.wixUrl, mlsSourceUrl: r.mlsUrl };
+                    totalProcessed += 1;
+                } else {
+                    totalFailed += 1;
+                }
+            }
+            await flushGallery(target, gallery);
+        }
+    }
+
+    const moreLeft = await findNextRowWithPending();
     return {
-        processed,
-        failed,
-        listingId: target._id,
-        remaining: findPendingIndex(gallery) >= 0
+        processed: totalProcessed,
+        failed: totalFailed,
+        listingId: lastListingId,
+        remaining: !!moreLeft
     };
+}
+
+// Fire-and-forget: kicks off the next link of the photo-drain HTTP chain.
+// Each link invokes /_functions/drainMedia which calls processMediaQueueStep
+// in a fresh Wix invocation budget, then triggers another link if anything
+// still remains. We use Promise.race against a short timeout so we return as
+// soon as the request is dispatched, without waiting for the link to finish
+// its work.
+export async function triggerMediaDrain() {
+    let secret;
+    try {
+        secret = await getSecret('SYNC_TRIGGER_SECRET');
+    } catch (err) {
+        console.log('triggerMediaDrain: secret read failed', err && err.message);
+        return;
+    }
+    if (!secret) {
+        console.log('triggerMediaDrain: SYNC_TRIGGER_SECRET not set');
+        return;
+    }
+
+    const send = fetch(CHAIN_ENDPOINT, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-sync-secret': secret
+        },
+        body: '{}'
+    }).catch(err => {
+        console.log('triggerMediaDrain: fetch error', err && err.message);
+    });
+
+    await Promise.race([
+        send,
+        new Promise(r => setTimeout(r, CHAIN_DISPATCH_TIMEOUT_MS))
+    ]);
 }
 
 export function mediaSrcsToTrash(gallery) {
@@ -93,7 +189,7 @@ export function mediaSrcsToTrash(gallery) {
 }
 
 export async function trashMedia(srcs) {
-    if (!srcs.length) return;
+    if (!srcs || !srcs.length) return;
     try {
         await mediaManager.moveFilesToTrash(srcs);
     } catch (err) {

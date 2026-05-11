@@ -1,12 +1,18 @@
 import wixData from 'wix-data';
-import { runSync, transformListing, mergeGallery } from 'backend/sync/pipeline';
+import { runSync, transformListing, mergeGallery, bootstrap, backfillPublishedFlag } from 'backend/sync/pipeline';
 import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
-import { processMediaQueueStep } from 'backend/sync/media';
+import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
+import { drainStaggingFanOut, countPendingStagging, processOneStaggingRow } from 'backend/sync/stagging';
+import { BOOTSTRAP_IDS } from 'backend/sync/bootstrap-ids';
 
 const COLLECTION = 'HousesforSale';
 
 const DEFAULT_TEST_LISTING_ID = 'A4672059';
+// Stay under Wix's ~59s web-method timeout so the test panel returns cleanly
+// instead of reporting "Request timed out". The work uses periodic flushes so
+// the row state is durable regardless.
+const TEST_PANEL_DEADLINE_MS = 50 * 1000;
 
 export function hourlyIncremental() {
     return runSync('incremental');
@@ -16,8 +22,19 @@ export function nightlyFull() {
     return runSync('full');
 }
 
-export function processMediaStep() {
-    return processMediaQueueStep();
+// Hourly cron: drain Stagging via parallel HTTP fan-out. Each fanned-out call
+// gets its own ~59s Wix budget, so this can promote many rows per tick. Also
+// runs the legacy media queue drain for any HousesforSale rows that picked up
+// pending photos through a toUpdate path.
+export async function processMediaStep() {
+    const deadline = Date.now() + TEST_PANEL_DEADLINE_MS;
+    const fan = await drainStaggingFanOut(deadline);
+    let queue = { processed: 0, failed: 0, remaining: false };
+    if (Date.now() < deadline) {
+        queue = await processMediaQueueStep(deadline);
+        if (queue.remaining) await triggerMediaDrain();
+    }
+    return { stagging: fan, mediaQueue: queue };
 }
 
 export async function testPeekFeed() {
@@ -33,6 +50,9 @@ export async function testDebugHydrate(listingId) {
     return results;
 }
 
+// Fetches one MLSGrid listing, writes it to Stagging, then triggers the
+// Stagging drain so it gets fully processed and promoted to HousesforSale in
+// the same invocation (within budget).
 export async function testHydrateAndInsertOne(listingId) {
     const id = listingId || DEFAULT_TEST_LISTING_ID;
     invalidateVillageCache();
@@ -43,60 +63,97 @@ export async function testHydrateAndInsertOne(listingId) {
     const village = await matchVillage(raw.SubdivisionName);
     if (!village) return { error: 'no village match', listingId: id, subdivision: raw.SubdivisionName };
 
-    const item = transformListing(raw, village);
-
-    // Diagnostic: surface what transformListing actually returned. WDE0004
-    // ("[[object Promise]]") would mean Wix's module cache resolved a stale
-    // version of transformListing as async; the check below makes that obvious.
-    console.log('[testHydrate] transform result', {
-        type: typeof item,
-        isPromise: item && typeof item.then === 'function',
-        keys: item && typeof item === 'object' ? Object.keys(item).slice(0, 10) : null,
-        galleryLen: item && Array.isArray(item.listingImageGallery) ? item.listingImageGallery.length : 'n/a'
-    });
-
+    // transformListing and mergeGallery are exported from pipeline.jsw. Wix
+    // wraps every exported .jsw function in a web-method proxy returning a
+    // Promise when called across module boundaries, so the awaits below are
+    // required even though both functions are sync at the source.
+    const item = await transformListing(raw, village);
     const existing = await wixData.get(COLLECTION, item._id, { suppressAuth: true }).catch(() => null);
+    const prevGallery = existing && existing.listingImageGallery;
 
-    let record = item;
+    const merged = await mergeGallery(item.listingImageGallery, prevGallery);
+
     if (existing) {
-        const merged = mergeGallery(item.listingImageGallery, existing.listingImageGallery);
-        const firstWixSrc = merged.find(g => g && g.src && !g.src.startsWith('http'));
-        record = {
+        // Already live in HousesforSale - update in place.
+        const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
+        await wixData.update(COLLECTION, {
             ...item,
             listingImageGallery: merged,
-            listingPrimaryImage: firstWixSrc ? firstWixSrc.src : item.listingPrimaryImage
-        };
-        console.log('[testHydrate] update record check', {
-            type: typeof record,
-            isPromise: record && typeof record.then === 'function',
-            galleryLen: Array.isArray(record.listingImageGallery) ? record.listingImageGallery.length : 'n/a'
-        });
-        await wixData.update(COLLECTION, record, { suppressAuth: true });
+            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
+            isPublished: existing.isPublished
+        }, { suppressAuth: true });
     } else {
-        console.log('[testHydrate] insert record check', {
-            type: typeof record,
-            isPromise: record && typeof record.then === 'function',
-            galleryLen: Array.isArray(record.listingImageGallery) ? record.listingImageGallery.length : 'n/a'
-        });
-        await wixData.insert(COLLECTION, record, { suppressAuth: true });
+        // New listing - go through Stagging.
+        await wixData.insert('Stagging', {
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: item.listingPrimaryImage,
+            isPublished: false
+        }, { suppressAuth: true });
+        // Process the row now so we promote within this invocation.
+        const result = await processOneStaggingRow(item._id);
+        return { ok: true, listingId: id, ...result };
     }
 
-    const persisted = await wixData.get(COLLECTION, record._id, { suppressAuth: true }).catch(() => null);
+    const queueResult = await processMediaQueueStep(Date.now() + TEST_PANEL_DEADLINE_MS);
+    if (queueResult.remaining) await triggerMediaDrain();
+
     return {
         ok: true,
-        action: existing ? 'updated' : 'inserted',
+        action: 'updated',
         listingId: id,
-        storedId: record._id,
+        storedId: item._id,
         subdivision: raw.SubdivisionName,
         village: village.villageName,
-        price: record.listingPrice,
-        gallerySize: persisted && Array.isArray(persisted.listingImageGallery) ? persisted.listingImageGallery.length : 0,
-        firstGallerySrc: persisted && persisted.listingImageGallery && persisted.listingImageGallery[0] ? persisted.listingImageGallery[0].src : null
+        price: item.listingPrice,
+        gallerySize: merged.length,
+        imagesUploaded: queueResult.processed,
+        imagesFailed: queueResult.failed
+    };
+}
+
+// One-time population from the bootstrap-ids master list. Now routes new
+// rows through Stagging (per applyWrites), so the bootstrap promotes rows to
+// HousesforSale only as photos finish - visitors never see incomplete rows.
+export async function runBootstrap() {
+    return bootstrap(BOOTSTRAP_IDS);
+}
+
+// One-time backfill: sets isPublished=true on HousesforSale rows whose
+// galleries are already fully wix-hosted. Useful after schema changes or when
+// rows were promoted by external paths (the old dashboard).
+export async function runBackfillPublished() {
+    return backfillPublishedFlag();
+}
+
+// Manual drain trigger. Use this if you want to force the Stagging drain
+// outside the hourly cron - the cron will hit the same code path on its own
+// schedule, but this lets you make progress faster during catch-up.
+export async function testDrainStagging() {
+    const deadline = Date.now() + TEST_PANEL_DEADLINE_MS;
+    const result = await drainStaggingFanOut(deadline);
+    console.log('[testDrainStagging]', result);
+    return result;
+}
+
+// Tracking helper - returns the three counts you care about: pending in
+// Stagging, live in HousesforSale, total. Use this in a status display or
+// just call it from the test panel to verify the system is making progress.
+export async function getSyncStatus() {
+    const pendingStagging = await countPendingStagging();
+    const liveHouses = await wixData.query(COLLECTION).count({ suppressAuth: true }).catch(() => 0);
+    const publishedHouses = await wixData.query(COLLECTION).eq('isPublished', true).count({ suppressAuth: true }).catch(() => liveHouses);
+    return {
+        pendingStagging,
+        liveHouses,
+        publishedHouses,
+        total: pendingStagging + liveHouses
     };
 }
 
 export async function testProcessMediaStep() {
-    const result = await processMediaQueueStep();
+    const result = await processMediaQueueStep(Date.now() + TEST_PANEL_DEADLINE_MS);
+    if (result.remaining) await triggerMediaDrain();
     console.log('[processMediaStep]', result);
-    return result;
+    return { ...result, chained: !!result.remaining };
 }

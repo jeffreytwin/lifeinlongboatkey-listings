@@ -1,0 +1,193 @@
+import wixData from 'wix-data';
+import { fetch } from 'wix-fetch';
+import { getSecret } from 'wix-secrets-backend';
+import { uploadWithRetry, trashMedia } from 'backend/sync/media';
+
+const STAGGING = 'Stagging';
+const HOUSES = 'HousesforSale';
+const PARALLEL_UPLOADS = 10;
+// Each per-row HTTP call gets its own ~59s Wix budget. Leave headroom for the
+// row read/write that bookend the uploads.
+const PER_ROW_DEADLINE_MS = 50 * 1000;
+// Cron fan-out: how many per-row HTTP calls to dispatch concurrently. Each is
+// awaited (not fire-and-forget), so dispatch is reliable.
+const FAN_OUT_PARALLEL = 10;
+
+const SITE_URL = 'https://www.lifeinlongboatkey.com';
+const PROCESS_ROW_ENDPOINT = `${SITE_URL}/_functions/processStaggingRow`;
+
+function isPending(item) {
+    return !!(item && typeof item.src === 'string' && item.src.startsWith('http'));
+}
+
+function isGalleryComplete(gallery) {
+    if (!Array.isArray(gallery) || !gallery.length) return false;
+    return gallery.every(g => g && typeof g.src === 'string' && !g.src.startsWith('http'));
+}
+
+export async function countPendingStagging() {
+    try {
+        const res = await wixData.query(STAGGING).count({ suppressAuth: true });
+        return res;
+    } catch (err) {
+        console.log('countPendingStagging failed', err && err.message);
+        return 0;
+    }
+}
+
+export async function getPendingStaggingRows(limit) {
+    const res = await wixData.query(STAGGING)
+        .ascending('_createdDate')
+        .limit(limit || 200)
+        .find({ suppressAuth: true });
+    return res.items;
+}
+
+// Process a single Stagging row in this invocation: upload all its pending
+// photos via internal Promise.all parallelism, flush progress between batches
+// for durability, then if the gallery is fully wix-hosted promote the row to
+// HousesforSale and delete it from Stagging.
+export async function processOneStaggingRow(rowId) {
+    if (!rowId) return { rowId, status: 'no_id', processed: 0, failed: 0 };
+
+    const row = await wixData.get(STAGGING, rowId, { suppressAuth: true }).catch(() => null);
+    if (!row) return { rowId, status: 'not_found', processed: 0, failed: 0 };
+
+    const gallery = [...(row.listingImageGallery || [])];
+    const pendingIdxs = [];
+    for (let i = 0; i < gallery.length; i++) {
+        if (isPending(gallery[i])) pendingIdxs.push(i);
+    }
+
+    let processed = 0;
+    let failed = 0;
+    const deadline = Date.now() + PER_ROW_DEADLINE_MS;
+
+    for (let b = 0; b < pendingIdxs.length && Date.now() < deadline; b += PARALLEL_UPLOADS) {
+        const batch = pendingIdxs.slice(b, b + PARALLEL_UPLOADS);
+        const results = await Promise.all(batch.map(async (idx) => {
+            const item = gallery[idx];
+            const mlsUrl = item.src;
+            try {
+                const wixUrl = await uploadWithRetry(mlsUrl);
+                return { idx, wixUrl, mlsUrl, ok: true };
+            } catch (err) {
+                console.log('processOneStaggingRow upload failed', mlsUrl, err && err.message);
+                return { idx, ok: false };
+            }
+        }));
+        for (const r of results) {
+            if (r.ok) {
+                gallery[r.idx] = { ...gallery[r.idx], src: r.wixUrl, mlsSourceUrl: r.mlsUrl };
+                processed += 1;
+            } else {
+                failed += 1;
+            }
+        }
+        // Flush progress to Stagging so a kill doesn't lose this batch.
+        try {
+            await wixData.update(STAGGING, { ...row, listingImageGallery: gallery }, { suppressAuth: true });
+        } catch (err) {
+            console.log('Stagging flush failed for', rowId, err && err.message);
+        }
+    }
+
+    if (!isGalleryComplete(gallery)) {
+        return { rowId, status: 'partial', processed, failed };
+    }
+
+    // Gallery is fully wix-hosted - promote to HousesforSale and remove from
+    // Stagging. Upsert in case HousesforSale already has this _id (handles a
+    // re-run or update path).
+    const firstWix = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+    const houseRecord = {
+        ...row,
+        listingImageGallery: gallery,
+        listingPrimaryImage: firstWix ? firstWix.src : row.listingPrimaryImage,
+        isPublished: true
+    };
+
+    try {
+        const existing = await wixData.get(HOUSES, rowId, { suppressAuth: true }).catch(() => null);
+        if (existing) {
+            // Carry over the system _createdDate so we don't disturb sort order.
+            await wixData.update(HOUSES, { ...existing, ...houseRecord }, { suppressAuth: true });
+        } else {
+            await wixData.insert(HOUSES, houseRecord, { suppressAuth: true });
+        }
+        await wixData.remove(STAGGING, rowId, { suppressAuth: true });
+        return { rowId, status: 'promoted', processed, failed };
+    } catch (err) {
+        console.log('promotion failed for', rowId, err && err.message);
+        return { rowId, status: 'promote_failed', processed, failed, error: err && err.message };
+    }
+}
+
+// Hourly cron's drain step. Pulls up to N pending Stagging rows and dispatches
+// concurrent HTTP calls to /_functions/processStaggingRow. Each call gets its
+// own fresh ~59s Wix invocation budget, so we get real parallelism instead of
+// the single-process budget ceiling. The cron awaits each call (not fire-and-
+// forget), which makes dispatch deterministic.
+export async function drainStaggingFanOut(deadline) {
+    const effectiveDeadline = deadline || (Date.now() + 50 * 1000);
+    let secret;
+    try {
+        secret = await getSecret('SYNC_TRIGGER_SECRET');
+    } catch (err) {
+        console.log('drainStaggingFanOut: secret read failed', err && err.message);
+        return { promoted: 0, partial: 0, processed: 0, failed: 0 };
+    }
+    if (!secret) {
+        console.log('drainStaggingFanOut: SYNC_TRIGGER_SECRET not set');
+        return { promoted: 0, partial: 0, processed: 0, failed: 0 };
+    }
+
+    let totalPromoted = 0;
+    let totalPartial = 0;
+    let totalProcessed = 0;
+    let totalFailed = 0;
+
+    while (Date.now() < effectiveDeadline) {
+        // Each iteration pulls the next FAN_OUT_PARALLEL pending rows and
+        // dispatches concurrent per-row HTTP calls. wixData query happens
+        // every loop so a row that was promoted by a previous wave isn't
+        // re-picked.
+        const pending = await getPendingStaggingRows(FAN_OUT_PARALLEL);
+        if (!pending.length) break;
+
+        const results = await Promise.all(pending.map(async (row) => {
+            try {
+                const r = await fetch(PROCESS_ROW_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-sync-secret': secret
+                    },
+                    body: JSON.stringify({ rowId: row._id })
+                });
+                if (!r.ok) {
+                    const body = await r.text();
+                    return { rowId: row._id, status: 'http_error', http: r.status, body: body.slice(0, 200) };
+                }
+                return await r.json();
+            } catch (err) {
+                return { rowId: row._id, status: 'fetch_error', error: err && err.message };
+            }
+        }));
+
+        for (const r of results) {
+            if (r.status === 'promoted') totalPromoted += 1;
+            else if (r.status === 'partial') totalPartial += 1;
+            totalProcessed += (r.processed || 0);
+            totalFailed += (r.failed || 0);
+        }
+
+        // If no progress this wave (all errored or all partial with 0 done),
+        // bail out so we don't burn the rest of the budget hammering broken
+        // rows.
+        const madeProgress = results.some(r => r.status === 'promoted' || (r.processed || 0) > 0);
+        if (!madeProgress) break;
+    }
+
+    return { promoted: totalPromoted, partial: totalPartial, processed: totalProcessed, failed: totalFailed };
+}
