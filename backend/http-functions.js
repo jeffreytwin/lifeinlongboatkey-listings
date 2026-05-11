@@ -4,7 +4,7 @@ import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
 import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
 import { processOneStaggingRow } from 'backend/sync/stagging';
-import { seedVillages } from 'backend/seed-villages';
+import { seedVillages } from 'backend/sync/seed';
 
 const CHAIN_DEADLINE_MS = 50 * 1000;
 
