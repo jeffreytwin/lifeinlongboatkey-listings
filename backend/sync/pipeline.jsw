@@ -11,6 +11,17 @@ const RUNS = 'SyncRuns';
 const POSTAL_CITY = 'longboat key';
 const SOFT_DEADLINE_MS = 50 * 1000;
 
+// What MLSGrid PropertyType values we consider on-site. RESO values:
+//   'Residential'       - for-sale homes, condos, townhouses (yes)
+//   'Land'              - vacant lots and acreage (yes)
+//   'Residential Lease' - rentals (no)
+//   'Commercial Sale'   - commercial sales (no)
+//   'Commercial Lease'  - commercial rentals (no)
+//   'Manufactured In Park', 'Business Opportunity' (no)
+// Add more values here to expand the on-site catalog without touching the
+// classify logic.
+const ALLOWED_PROPERTY_TYPES = new Set(['residential', 'land']);
+
 // Inlined transform. Wix's module cache for a separate transform.jsw kept
 // returning an empty stub even when the source was correct, so the function
 // lives here next to its only consumer.
@@ -168,16 +179,13 @@ async function classify(mlsItems) {
             continue;
         }
 
-        // Exclude rentals, leases, commercial, and land. We only show
-        // residential for-sale listings. PropertyType values per RESO:
-        // 'Residential' = for-sale homes/condos/townhouses (what we want)
-        // 'Residential Lease' = rentals (apartments etc.) - exclude
-        // 'Commercial Sale', 'Commercial Lease', 'Land' - exclude
-        // A listing that transitions out of Residential (e.g., relisted as a
+        // Exclude rentals/leases, commercial, and other categories we don't
+        // display. ALLOWED_PROPERTY_TYPES controls the allow-list. A listing
+        // that transitions out of an allowed type (e.g. a sale relisted as a
         // lease) gets routed to removal so any existing HousesforSale row is
         // cleaned up with its photos.
         const propertyType = (raw.PropertyType || '').toLowerCase();
-        if (propertyType !== 'residential') {
+        if (!ALLOWED_PROPERTY_TYPES.has(propertyType)) {
             removalIds.push(raw.ListingId);
             continue;
         }
@@ -373,7 +381,7 @@ export async function bootstrap(ids) {
                 skippedInactive += 1;
                 continue;
             }
-            if ((raw.PropertyType || '').toLowerCase() !== 'residential') {
+            if (!ALLOWED_PROPERTY_TYPES.has((raw.PropertyType || '').toLowerCase())) {
                 skippedNonResidential += 1;
                 continue;
             }
