@@ -423,17 +423,62 @@ export async function backfillPublishedFlag() {
     return { processed, updated };
 }
 
+async function fetchAllCollectionIds(collectionName) {
+    const all = [];
+    let skip = 0;
+    const pageSize = 1000;
+    while (true) {
+        const res = await wixData.query(collectionName)
+            .fields('_id').limit(pageSize).skip(skip)
+            .find({ suppressAuth: true });
+        for (const item of res.items) all.push(item._id);
+        if (res.items.length < pageSize) break;
+        skip += pageSize;
+    }
+    return all;
+}
+
 export async function runSync(mode) {
     const startedAt = new Date();
     const deadline = Date.now() + SOFT_DEADLINE_MS;
     invalidateVillageCache();
 
     try {
-        const fetchOpts = mode === 'full'
-            ? { activeOnly: true }
-            : { since: await getLastSuccessfulRunAt(), activeOnly: false };
+        let items;
+        let requestCount;
+        let expectedCount;
 
-        const { items, requestCount, expectedCount } = await fetchProperties(fetchOpts);
+        if (mode === 'full') {
+            // Verify-by-id: walk every HousesforSale ID and fetch its current
+            // MLS state in batches. Bounded by our row count (~324), not by
+            // the entire mfrmls feed - fits comfortably in budget. planFull
+            // then diffs the result against HousesforSale:
+            //   - toDelete: rows in HousesforSale not present in our
+            //     upserts list. Catches every removal case at once:
+            //     silent fall-outs from MLS, status changes to non-Active,
+            //     city changes away from LBK, subdivision changes that no
+            //     longer match a village.
+            //   - toUpdate: rows still active with meaningful changes.
+            //   - toInsert: naturally empty (we only fetched IDs we already
+            //     have). Hourly incremental handles additions.
+            const houseIds = await fetchAllCollectionIds(COLLECTION);
+            if (houseIds.length === 0) {
+                items = [];
+                requestCount = 0;
+            } else {
+                const verify = await fetchByIds(houseIds);
+                items = verify.items;
+                requestCount = verify.requestCount;
+            }
+            expectedCount = items.length;
+        } else {
+            const fetchOpts = { since: await getLastSuccessfulRunAt(), activeOnly: false };
+            const r = await fetchProperties(fetchOpts);
+            items = r.items;
+            requestCount = r.requestCount;
+            expectedCount = r.expectedCount;
+        }
+
         const { upsertRaw, removalIds } = await classify(items);
         const upserts = upsertRaw.map(({ raw, village }) => transformListing(raw, village));
 
