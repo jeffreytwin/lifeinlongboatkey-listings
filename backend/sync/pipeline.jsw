@@ -168,6 +168,20 @@ async function classify(mlsItems) {
             continue;
         }
 
+        // Exclude rentals, leases, commercial, and land. We only show
+        // residential for-sale listings. PropertyType values per RESO:
+        // 'Residential' = for-sale homes/condos/townhouses (what we want)
+        // 'Residential Lease' = rentals (apartments etc.) - exclude
+        // 'Commercial Sale', 'Commercial Lease', 'Land' - exclude
+        // A listing that transitions out of Residential (e.g., relisted as a
+        // lease) gets routed to removal so any existing HousesforSale row is
+        // cleaned up with its photos.
+        const propertyType = (raw.PropertyType || '').toLowerCase();
+        if (propertyType !== 'residential') {
+            removalIds.push(raw.ListingId);
+            continue;
+        }
+
         // Active LBK listing must match a known village or it can't appear on
         // the site. If matchVillage returns null and the listing was
         // previously in HousesforSale (e.g. its SubdivisionName changed to
@@ -345,6 +359,7 @@ export async function bootstrap(ids) {
 
         let skippedNonLbk = 0;
         let skippedInactive = 0;
+        let skippedNonResidential = 0;
         let skippedNoVillage = 0;
         const upserts = [];
         for (const raw of items) {
@@ -356,6 +371,10 @@ export async function bootstrap(ids) {
             }
             if ((raw.StandardStatus || '').toLowerCase() !== 'active') {
                 skippedInactive += 1;
+                continue;
+            }
+            if ((raw.PropertyType || '').toLowerCase() !== 'residential') {
+                skippedNonResidential += 1;
                 continue;
             }
             const village = await matchVillage(raw.SubdivisionName);
@@ -382,6 +401,7 @@ export async function bootstrap(ids) {
             rawFetched: items.length,
             skippedNonLbk,
             skippedInactive,
+            skippedNonResidential,
             skippedNoVillage,
             transformed: upserts.length,
             ...counts
