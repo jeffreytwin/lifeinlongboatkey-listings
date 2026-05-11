@@ -157,14 +157,30 @@ async function classify(mlsItems) {
         // case other originating systems populate it instead.
         const city = (raw.City || raw.PostalCity || '').toLowerCase();
         if (city !== POSTAL_CITY) continue;
+
         const status = (raw.StandardStatus || '').toLowerCase();
-        if (status === 'active') {
-            const village = await matchVillage(raw.SubdivisionName);
-            if (!village) continue;
-            upsertRaw.push({ raw, village });
-        } else {
+        if (status !== 'active') {
+            // Status change away from Active (Sold, Pending, Withdrawn, etc.):
+            // route to removal so the existing HousesforSale row gets deleted
+            // along with its media.
             removalIds.push(raw.ListingId);
+            continue;
         }
+
+        // Active LBK listing must match a known village or it can't appear on
+        // the site. If matchVillage returns null and the listing was
+        // previously in HousesforSale (e.g. its SubdivisionName changed to
+        // something we don't recognize), route to removal so planIncremental
+        // deletes the stale row and trashes its photos. New listings with no
+        // village match are filtered out naturally because they're not
+        // already present.
+        const village = await matchVillage(raw.SubdivisionName);
+        if (!village) {
+            removalIds.push(raw.ListingId);
+            continue;
+        }
+
+        upsertRaw.push({ raw, village });
     }
     return { upsertRaw, removalIds };
 }
