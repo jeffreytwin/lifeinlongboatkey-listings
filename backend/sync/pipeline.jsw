@@ -122,6 +122,7 @@ async function recordRun(mode, status, counts, errorMessage) {
         imagesUploaded: counts.imagesUploaded || 0,
         imagesFailed: counts.imagesFailed || 0,
         imagesTrashed: counts.imagesTrashed || 0,
+        datesRefreshed: counts.datesRefreshed || 0,
         mlsGridRequestCount: counts.mlsGridRequestCount || 0,
         mlsGridListingCount: counts.mlsGridListingCount || 0,
         errorMessage: errorMessage || null
@@ -438,6 +439,35 @@ async function fetchAllCollectionIds(collectionName) {
     return all;
 }
 
+// Bulk-refresh dateOfMlsPull on every HousesforSale row. MLSGrid compliance
+// requires that we reflect a fresh "last pulled" timestamp at least every
+// 12 hours; the per-row transformListing only updates this on changed rows,
+// so we sweep the whole collection at the end of every runSync to keep
+// untouched rows from going stale. wixData.bulkUpdate handles ~100 rows
+// per call; 324 rows is ~4 chunks, a couple of seconds total.
+async function refreshAllDateOfMlsPull(deadline) {
+    const now = new Date();
+    let totalUpdated = 0;
+    const PAGE = 100;
+    let skip = 0;
+    while (Date.now() < deadline) {
+        const res = await wixData.query(COLLECTION)
+            .limit(PAGE).skip(skip)
+            .find({ suppressAuth: true });
+        if (!res.items.length) break;
+        const updates = res.items.map(item => ({ ...item, dateOfMlsPull: now }));
+        try {
+            const bulk = await wixData.bulkUpdate(COLLECTION, updates, { suppressAuth: true });
+            totalUpdated += (bulk && bulk.updated) != null ? bulk.updated : updates.length;
+        } catch (err) {
+            console.log('refreshAllDateOfMlsPull failed at skip', skip, err && err.message);
+        }
+        if (res.items.length < PAGE) break;
+        skip += res.items.length;
+    }
+    return totalUpdated;
+}
+
 export async function runSync(mode) {
     const startedAt = new Date();
     const deadline = Date.now() + SOFT_DEADLINE_MS;
@@ -488,10 +518,20 @@ export async function runSync(mode) {
 
         const writeCounts = await applyWrites(plan, deadline);
 
+        // MLSGrid compliance: every HousesforSale row must show a fresh
+        // dateOfMlsPull at least every 12 hours. transformListing only
+        // refreshes rows we wrote in this run, so do a sweep here to keep
+        // untouched rows from going stale.
+        let datesRefreshed = 0;
+        if (Date.now() < deadline) {
+            datesRefreshed = await refreshAllDateOfMlsPull(deadline);
+        }
+
         const counts = {
             startedAt,
             mlsGridRequestCount: requestCount,
             mlsGridListingCount: expectedCount != null ? expectedCount : items.length,
+            datesRefreshed,
             ...writeCounts
         };
         await recordRun(mode, 'ok', counts);
