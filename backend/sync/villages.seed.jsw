@@ -428,20 +428,12 @@ export const VILLAGE_SEED = [
     "order": 53
   },
   {
-    "matchPattern": "longboat key club",
-    "villageName": "Longboat Key Club",
-    "villageSortHelp": "Longboat Key Club",
-    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/longboat-key-club",
-    "village1": "44287c14-20c6-41c0-aadd-fed6fdaa2df6",
-    "order": 54
-  },
-  {
     "matchPattern": "longboat key estates",
     "villageName": "Longboat Key Estates",
     "villageSortHelp": "Longboat Key Estates",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/weston-pointe",
     "village1": "6aa3f7f7-1ef2-4037-901f-c691d566a63c",
-    "order": 55
+    "order": 54
   },
   {
     "matchPattern": "longboat key towers",
@@ -449,7 +441,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Longboat Key Towers (Longboat Key Club)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/longboat-key-towers-(longboat-key-club)",
     "village1": "a8e5bc7b-2ee5-4df1-99da-b6b58fbabdd3",
-    "order": 56
+    "order": 55
   },
   {
     "matchPattern": "longboat landing",
@@ -457,7 +449,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Longboat Landing",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/longboat-key-towers-(longboat-key-club)",
     "village1": "a8e5bc7b-2ee5-4df1-99da-b6b58fbabdd3",
-    "order": 57
+    "order": 56
   },
   {
     "matchPattern": "longboat shores",
@@ -465,7 +457,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Longboat Shores",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/longboat-shores",
     "village1": "93b2bc88-383d-45b0-aab4-b54100364e02",
-    "order": 58
+    "order": 57
   },
   {
     "matchPattern": "marina bay",
@@ -473,7 +465,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Marina Bay (Bay Isles)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/marina-bay-(bay-isles)",
     "village1": "1c21b5c9-ecd5-471d-a656-90a32d034f78",
-    "order": 59
+    "order": 58
   },
   {
     "matchPattern": "neptune",
@@ -481,7 +473,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Neptune",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/neptune",
     "village1": "6dbf2382-6ba6-4d57-ace5-7ad0087248f3",
-    "order": 60
+    "order": 59
   },
   {
     "matchPattern": "northgate",
@@ -489,7 +481,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Northgate",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/northgate",
     "village1": "c3176bfd-52b9-4ca3-899b-0cad27c551f8",
-    "order": 61
+    "order": 60
   },
   {
     "matchPattern": "pelican harbour",
@@ -497,7 +489,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Pelican Harbour & Beach Club",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/pelican-harbour-%26-beach-club",
     "village1": "fc4ab52b-3dde-4b36-9b85-595336f4273b",
-    "order": 62
+    "order": 61
   },
   {
     "matchPattern": "pierre",
@@ -505,7 +497,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Pierre (Longboat Key Club)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/pierre",
     "village1": "37c56e34-4722-467a-99e4-d5884eb0a8e9",
-    "order": 63
+    "order": 62
   },
   {
     "matchPattern": "players club",
@@ -513,7 +505,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Players Club",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/players-club",
     "village1": "56c00258-e6c1-4aa2-aaa4-9ca4c15dad5f",
-    "order": 64
+    "order": 63
   },
   {
     "matchPattern": "portobello",
@@ -521,7 +513,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Portobello",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/portobello",
     "village1": "9fca54d1-d3f6-4615-b7a1-8fc110b034d6",
-    "order": 65
+    "order": 64
   },
   {
     "matchPattern": "positano",
@@ -529,7 +521,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Positano",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/positano",
     "village1": "ea35bf0a-9f97-4b59-a398-aab3e55bca23",
-    "order": 66
+    "order": 65
   },
   {
     "matchPattern": "privateer",
@@ -537,7 +529,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Privateer (Longboat Key Club)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/privateer-(longboat-key-club)",
     "village1": "10b4f62e-3e2c-46b8-b568-858b71f81473",
-    "order": 67
+    "order": 66
   },
   {
     "matchPattern": "promenade",
@@ -545,7 +537,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Promenade",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/pomenade-new",
     "village1": "abd8f137-2e49-45f7-bef9-d42760495421",
-    "order": 68
+    "order": 67
   },
   {
     "matchPattern": "queens harbour",
@@ -553,7 +545,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Queens Harbour",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/queens-harbour",
     "village1": "d25c7035-7cd6-4a74-a476-11eb9307a5d0",
-    "order": 69
+    "order": 68
   },
   {
     "matchPattern": "regent court",
@@ -561,7 +553,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Regent Court (Longboat Key Club)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/regent-court",
     "village1": "adc9f424-258d-45cf-96d1-be8f462a39cf",
-    "order": 70
+    "order": 69
   },
   {
     "matchPattern": "regent place",
@@ -569,7 +561,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Regent Place (Longboat Key Club)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/regent-place-(longboat-key-club)",
     "village1": "3c840976-2580-4628-83b7-cfb0f37725ee",
-    "order": 71
+    "order": 70
   },
   {
     "matchPattern": "sabal cove",
@@ -577,7 +569,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sabal Cove",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/queens-harbour-(bay-isles)",
     "village1": "c98eb7ae-d316-42ad-ba49-403a4a2a77f1",
-    "order": 72
+    "order": 71
   },
   {
     "matchPattern": "sage longboat key",
@@ -585,7 +577,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sage Longboat Key",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sabal-cove-(bay-isles)",
     "village1": "362f3e3b-46cd-4ef2-9c23-c03d912c90a0",
-    "order": 73
+    "order": 72
   },
   {
     "matchPattern": "sand cay",
@@ -593,7 +585,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sand Cay Beach Resort",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sand-cay-beach-resort",
     "village1": "847f98e8-a3c3-4a5e-8a8b-3be717c2bbf8",
-    "order": 74
+    "order": 73
   },
   {
     "matchPattern": "sands point",
@@ -601,7 +593,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sands Point",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sage-longboat-key",
     "village1": "6e850cab-adb3-43af-a7cc-fca98302c4f9",
-    "order": 75
+    "order": 74
   },
   {
     "matchPattern": "sea gate club",
@@ -609,7 +601,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sea Gate Club",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sands-point",
     "village1": "a6c98916-cada-49b0-b3d5-1fa7a2a1248f",
-    "order": 76
+    "order": 75
   },
   {
     "matchPattern": "seagrape",
@@ -617,7 +609,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sea Grape Inn",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sea-grape-inn",
     "village1": "5c35b7f8-aa9a-4133-abe5-89f377e774eb",
-    "order": 77
+    "order": 76
   },
   {
     "matchPattern": "sea grape",
@@ -625,7 +617,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sea Grape Inn",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sea-grape-inn",
     "village1": "5c35b7f8-aa9a-4133-abe5-89f377e774eb",
-    "order": 78
+    "order": 77
   },
   {
     "matchPattern": "sea oats",
@@ -633,7 +625,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sea Oats",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sea-oats",
     "village1": "82e57346-7551-47a8-9bea-c13e4ffe64ff",
-    "order": 79
+    "order": 78
   },
   {
     "matchPattern": "seahorse",
@@ -641,7 +633,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Seahorse Beach Resort",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sea-horse",
     "village1": "9766086d-8c26-4c54-a9ce-90224d951e58",
-    "order": 80
+    "order": 79
   },
   {
     "matchPattern": "seaplace",
@@ -649,7 +641,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Seaplace",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sea-gate-club",
     "village1": "3546f1bc-80df-4566-b043-6f2aefc16a19",
-    "order": 81
+    "order": 80
   },
   {
     "matchPattern": "seascape",
@@ -657,7 +649,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Seascape",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/seaplace",
     "village1": "77f01d50-ed3f-411c-aca1-06739ef659c6",
-    "order": 82
+    "order": 81
   },
   {
     "matchPattern": "sea pines",
@@ -665,7 +657,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sea Pines",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sea-pines",
     "village1": "a0e17d88-13b4-4a7b-ac52-e13d2c811752",
-    "order": 83
+    "order": 82
   },
   {
     "matchPattern": "silver sands",
@@ -673,7 +665,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Silver Sands",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/silver-sands",
     "village1": "23a5c9d3-7044-4a80-ac8c-ff22f591535f",
-    "order": 84
+    "order": 83
   },
   {
     "matchPattern": "sleepy lagoon",
@@ -681,7 +673,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sleepy Lagoon",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sleepy-lagoon",
     "village1": "454bad1b-06de-4f9f-8a0b-7f2eb428ca79",
-    "order": 85
+    "order": 84
   },
   {
     "matchPattern": "sleep lagoon",
@@ -689,7 +681,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sleepy Lagoon",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sleepy-lagoon",
     "village1": "454bad1b-06de-4f9f-8a0b-7f2eb428ca79",
-    "order": 86
+    "order": 85
   },
   {
     "matchPattern": "spanish main",
@@ -697,7 +689,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Spanish Main Yacht Club (55+)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/spanish-main-yacht-club-(55%2B)",
     "village1": "dea2055b-e01b-4de5-8dd3-2e417a9214e1",
-    "order": 87
+    "order": 86
   },
   {
     "matchPattern": "sunset beach",
@@ -705,7 +697,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sunset Beach",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/seaside",
     "village1": "6a428652-a704-4bfc-92e4-5dafb18abc68",
-    "order": 88
+    "order": 87
   },
   {
     "matchPattern": "sutton place",
@@ -713,7 +705,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Sutton Place",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sunset-beach",
     "village1": "a51658d2-e2ca-4836-a411-4a36a3f54d23",
-    "order": 89
+    "order": 88
   },
   {
     "matchPattern": "tangerine bay club",
@@ -721,7 +713,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Tangerine Bay Club",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/tangerine-bay-club",
     "village1": "060f1667-6105-4fa3-a650-dccd61e44d78",
-    "order": 90
+    "order": 89
   },
   {
     "matchPattern": "the bayou",
@@ -729,7 +721,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "The Bayou (Bay Isles)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-bayou-(bay-isles)",
     "village1": "98eb305d-0b83-496c-8b87-d5982cef505c",
-    "order": 91
+    "order": 90
   },
   {
     "matchPattern": "the beach on longboat key",
@@ -737,7 +729,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "The Beach on Longboat Key",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-beach-on-longboat-key",
     "village1": "54b293fa-3cee-472b-a6c1-7a27f38172d8",
-    "order": 92
+    "order": 91
   },
   {
     "matchPattern": "beaches of longboat key",
@@ -745,7 +737,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "The Beaches (Longboat Key Club)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-beaches-(longboat-key-club)",
     "village1": "77e7e1ce-f445-46a3-8dcf-0740aff9034b",
-    "order": 93
+    "order": 92
   },
   {
     "matchPattern": "the grande",
@@ -753,7 +745,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "The Grande at Longboat Key",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/grande-at-longboat-key",
     "village1": "f72ab8ac-0088-4d8c-a134-6d4697d9b73f",
-    "order": 94
+    "order": 93
   },
   {
     "matchPattern": "the grand",
@@ -761,7 +753,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "The Grande at Longboat Key",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/grande-at-longboat-key",
     "village1": "f72ab8ac-0088-4d8c-a134-6d4697d9b73f",
-    "order": 95
+    "order": 94
   },
   {
     "matchPattern": "st. regis",
@@ -769,7 +761,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "The Residences at The St. Regis",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/tennis-gardens-(longboat-key-club",
     "village1": "34eb509c-19b7-4e0a-968c-fa257529bf62",
-    "order": 96
+    "order": 95
   },
   {
     "matchPattern": "sanctuary",
@@ -777,7 +769,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "The Sanctuary (Longboat Key Club)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-residences-at-the-st.-regis",
     "village1": "6ca2f7b7-3f18-4ace-8566-e86ccee2b4d3",
-    "order": 97
+    "order": 96
   },
   {
     "matchPattern": "the shore",
@@ -785,7 +777,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "The Shore",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-shore",
     "village1": "c55aaf0a-bc94-4f1e-b744-7ddcd32cd5d4",
-    "order": 98
+    "order": 97
   },
   {
     "matchPattern": "tiffany plaza",
@@ -793,7 +785,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Tiffany Plaza",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/tiffany-plaza",
     "village1": "8e7822ae-c315-4434-bd09-bb02a5a5085c",
-    "order": 99
+    "order": 98
   },
   {
     "matchPattern": "turtle crawl",
@@ -801,7 +793,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Turtle Crawl Inn",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/turtle-crawl-inn",
     "village1": "caf4d2d3-f007-4ced-be9b-d535e2126b87",
-    "order": 100
+    "order": 99
   },
   {
     "matchPattern": "veinte",
@@ -809,7 +801,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Veinte",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/veinte",
     "village1": "c92a6bc1-a2f7-4df5-ae83-5e46e18cda2f",
-    "order": 101
+    "order": 100
   },
   {
     "matchPattern": "villa di lancia",
@@ -817,7 +809,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Villa di Lancia",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/villa-di-lancia",
     "village1": "5c2a206e-68a1-4b4b-8ddf-f3bbf4494b54",
-    "order": 102
+    "order": 101
   },
   {
     "matchPattern": "vizcaya",
@@ -825,7 +817,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Vizcaya",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/vizcaya",
     "village1": "0b9db51f-91da-42a6-9435-03797d9305c4",
-    "order": 103
+    "order": 102
   },
   {
     "matchPattern": "water club",
@@ -833,7 +825,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Water Club",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-sanctuary-(longboat-key-club)",
     "village1": "f87c271c-63a1-4fb8-89fd-2dc3f452a6b9",
-    "order": 104
+    "order": 103
   },
   {
     "matchPattern": "westchester",
@@ -841,7 +833,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Westchester",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/westchester",
     "village1": "37f82a06-77fe-4ba5-81ee-b826822cb794",
-    "order": 105
+    "order": 104
   },
   {
     "matchPattern": "weston pointe",
@@ -849,7 +841,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Weston Pointe (Bay Isles)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/weston-pointe-(bay-isles)",
     "village1": "c64ba845-05e9-4958-bde4-80b6c4e2e721",
-    "order": 106
+    "order": 105
   },
   {
     "matchPattern": "whitney beach",
@@ -857,7 +849,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Whitney Beach",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/whitney-beach",
     "village1": "c0482a6c-0433-4388-b91e-0e89ce50d370",
-    "order": 107
+    "order": 106
   },
   {
     "matchPattern": "winding oaks",
@@ -865,7 +857,7 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Winding Oaks (Bay Isles)",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/winding-oaks-(bay-isles)",
     "village1": "f2538b9a-4494-4154-b8fe-60c5db7a3cc5",
-    "order": 108
+    "order": 107
   },
   {
     "matchPattern": "windward bay",
@@ -873,6 +865,6 @@ export const VILLAGE_SEED = [
     "villageSortHelp": "Windward Bay",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/windward-bay",
     "village1": "9d1cf7a0-0694-42bd-9fd6-cce8c77ddd5c",
-    "order": 109
+    "order": 108
   }
 ];

@@ -2,7 +2,7 @@ import wixData from 'wix-data';
 import { runSync, transformListing, mergeGallery, bootstrap, backfillPublishedFlag } from 'backend/sync/pipeline';
 import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
-import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
+import { processMediaQueueStep, triggerMediaDrain, trashMedia } from 'backend/sync/media';
 import { drainStaggingFanOut, countPendingStagging, processOneStaggingRow } from 'backend/sync/stagging';
 import { BOOTSTRAP_IDS } from 'backend/sync/bootstrap-ids';
 
@@ -156,4 +156,77 @@ export async function testProcessMediaStep() {
     if (result.remaining) await triggerMediaDrain();
     console.log('[processMediaStep]', result);
     return { ...result, chained: !!result.remaining };
+}
+
+// One-shot cleanup: re-runs the village matcher against every HousesforSale
+// row currently assigned to `villageName` and either reassigns it to its
+// correct village or removes it (and trashes its photos) if no village
+// matches the current subdivision.
+//
+// Needed because the hourly/nightly syncs only update a row when its price,
+// status, or modificationTimestamp changes (see diff.hasMeaningfulChange) -
+// so a village-matcher fix won't propagate to existing rows on its own.
+//
+// Intended use: after deleting a Villages row or changing matchPatterns, call
+// this once with the affected name. Safe to re-run; rows already reassigned
+// are no longer found by the eq('village') filter.
+export async function reclassifyHousesforSaleByVillage(villageName) {
+    const COLLECTION = 'HousesforSale';
+    invalidateVillageCache();
+
+    const rows = [];
+    let skip = 0;
+    const PAGE = 100;
+    while (true) {
+        const res = await wixData.query(COLLECTION).eq('village', villageName).limit(PAGE).skip(skip).find({ suppressAuth: true });
+        for (const r of res.items) rows.push(r);
+        if (res.items.length < PAGE) break;
+        skip += res.items.length;
+    }
+
+    let reassigned = 0;
+    let removed = 0;
+    let unchanged = 0;
+    const reassignedSummary = [];
+    const removedSummary = [];
+
+    for (const row of rows) {
+        const newVillage = await matchVillage(row.subdivision);
+        if (newVillage && newVillage.villageName === villageName) {
+            unchanged += 1;
+            continue;
+        }
+        if (newVillage) {
+            try {
+                await wixData.update(COLLECTION, {
+                    ...row,
+                    village: newVillage.villageName,
+                    village1: newVillage.village1,
+                    villageLink: newVillage.villageURL,
+                    villageSortHelp: newVillage.villageSortHelp,
+                    blueTag1: newVillage.blueTag1 || '',
+                    purpleTag1: newVillage.purpleTag1 || '',
+                    greenTag1: newVillage.greenTag1 || ''
+                }, { suppressAuth: true });
+                reassigned += 1;
+                reassignedSummary.push({ id: row._id, subdivision: row.subdivision, to: newVillage.villageName });
+            } catch (err) {
+                console.log('reclassify update failed for', row._id, err && err.message);
+            }
+            continue;
+        }
+        const wixSrcs = Array.isArray(row.listingImageGallery)
+            ? row.listingImageGallery.filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http')).map(g => g.src)
+            : [];
+        try {
+            await wixData.remove(COLLECTION, row._id, { suppressAuth: true });
+            removed += 1;
+            removedSummary.push({ id: row._id, subdivision: row.subdivision });
+        } catch (err) {
+            console.log('reclassify remove failed for', row._id, err && err.message);
+        }
+        if (wixSrcs.length) await trashMedia(wixSrcs);
+    }
+
+    return { scanned: rows.length, reassigned, removed, unchanged, reassignedSummary, removedSummary };
 }
