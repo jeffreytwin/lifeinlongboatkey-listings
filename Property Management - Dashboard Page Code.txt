@@ -124,7 +124,6 @@ $w.onReady(async function () {
       let isLongboatBeachHouse = subDivisionName.search("longboat beach house");
       let isLongboatHarbour = subDivisionName.search("longboat harbour");
       let isLongboatHarbourTowers = subDivisionName.search("longboat harbour towers");
-      let isLongboatKeyClub = subDivisionName.search("longboat key club");
       let isLongboatKeyEstates = subDivisionName.search("longboat key estates");
       let isLongboatKeyTowers = subDivisionName.search("longboat key towers");
       let isLongboatLanding = subDivisionName.search("longboat landing");
@@ -242,7 +241,6 @@ $w.onReady(async function () {
           isLongboatBeachHouse !== -1 ||
           isLongboatHarbour !== -1 ||
           isLongboatHarbourTowers !== -1 ||
-          isLongboatKeyClub !== -1 ||
           isLongboatKeyEstates !== -1 ||
           isLongboatKeyTowers !== -1 ||
           isLongboatLanding !== -1 ||
@@ -619,12 +617,6 @@ $w.onReady(async function () {
           valData['villageSortHelp'] = "Longboat Harbour Towers";
           valData['VillageURL'] = `${baseURL}/neighborhood/longboat-harbour-towers`;
           valData['village1'] = "a1d8f310-966b-4d68-ae92-521186d328c5";
-        }
-        if (isLongboatKeyClub !== -1) {
-          valData['Village'] = "Longboat Key Club";
-          valData['villageSortHelp'] = "Longboat Key Club";
-          valData['VillageURL'] = `${baseURL}/neighborhood/longboat-key-club`;
-          valData['village1'] = "44287c14-20c6-41c0-aadd-fed6fdaa2df6";
         }
         if (isLongboatKeyEstates !== -1) {
           valData['Village'] = "Longboat Key Estates";

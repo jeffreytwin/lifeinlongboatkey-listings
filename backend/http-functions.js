@@ -5,6 +5,7 @@ import { runSync } from 'backend/sync/pipeline';
 import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
 import { processOneStaggingRow } from 'backend/sync/stagging';
 import { seedVillages } from 'backend/sync/seed';
+import { reclassifyHousesforSaleByVillage } from 'backend/sync/run';
 
 const CHAIN_DEADLINE_MS = 50 * 1000;
 
@@ -80,6 +81,23 @@ export async function post_processStaggingRow(request) {
         const body = await request.body.json();
         if (!body || !body.rowId) return badRequest({ body: 'rowId required' });
         const result = await processOneStaggingRow(body.rowId);
+        return jsonResponse(200, result);
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// One-shot cleanup: re-runs the village matcher against every HousesforSale
+// row currently assigned to ?villageName=... and either reassigns it to its
+// correct village or removes it (and trashes its photos) if no village
+// matches the current subdivision. Use after deleting a Villages row or
+// adjusting matchPatterns.
+export async function post_reclassifyByVillage(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    const villageName = request.query && request.query.villageName;
+    if (!villageName) return badRequest({ body: 'villageName query param required' });
+    try {
+        const result = await reclassifyHousesforSaleByVillage(villageName);
         return jsonResponse(200, result);
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });
