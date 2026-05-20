@@ -145,6 +145,13 @@ export async function reviveStrandedStagging() {
         !Array.isArray(r.listingImageGallery) || r.listingImageGallery.length === 0
     );
 
+    // Refresh-only: never call processOneStaggingRow inline. Each invocation
+    // of that function has its own 50s budget, which alone exceeds Wix's 59s
+    // WebMethod cap and blows up the whole function. Instead, refresh the
+    // empty-gallery rows from MLSGrid and return - the per-minute
+    // processMediaStep cron's drainStaggingFanOut fan-out is the right place
+    // to do the photo uploads, because each fanned-out HTTP call gets its
+    // own fresh 59s budget and they run in parallel.
     const results = [];
     for (const row of empties) {
         if (Date.now() > deadline) {
@@ -173,14 +180,13 @@ export async function reviveStrandedStagging() {
             isPublished: false
         }, { suppressAuth: true });
 
-        const drained = await processOneStaggingRow(row._id);
         results.push({
             id: row._id,
             subdivision: raw.SubdivisionName,
             village: village.villageName,
             mlsGallerySize: Array.isArray(item.listingImageGallery) ? item.listingImageGallery.length : 0,
             mergedGallerySize: merged.length,
-            drained
+            status: 'refreshed'
         });
     }
 
