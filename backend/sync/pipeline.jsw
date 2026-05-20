@@ -268,6 +268,34 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
     };
 
     for (const item of toInsert) {
+        // Upsert against Stagging. If a row with this _id already exists
+        // (almost always because we inserted it on an earlier hourly run
+        // before MLSGrid populated Media), refresh it with the latest MLS
+        // data and merge the gallery so any photos already uploaded to Wix
+        // are preserved. Without this, a row inserted with an empty Media
+        // payload stays empty forever - subsequent hourly inserts collide on
+        // _id and throw, leaving the original empty-gallery row stranded in
+        // Stagging.
+        const existing = await wixData.get(STAGGING, item._id, { suppressAuth: true }).catch(() => null);
+        if (existing) {
+            const merged = mergeGallery(item.listingImageGallery, existing.listingImageGallery);
+            const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
+            const record = {
+                ...existing,
+                ...item,
+                listingImageGallery: merged,
+                listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
+                isPublished: false
+            };
+            try {
+                await wixData.update(STAGGING, record, { suppressAuth: true });
+                counts.inserted += 1;
+            } catch (err) {
+                console.log('Stagging update failed for', item._id, err && err.message);
+            }
+            continue;
+        }
+
         const merged = mergeGallery(item.listingImageGallery, []);
         const record = {
             ...item,
