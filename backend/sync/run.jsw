@@ -126,6 +126,67 @@ export async function runBackfillPublished() {
     return backfillPublishedFlag();
 }
 
+// Recovery for Stagging rows that landed with an empty gallery (typically
+// because MLSGrid hadn't populated Media yet at first fetch) and never got
+// refreshed - either because the row's ModificationTimestamp hasn't moved
+// since, so it falls below the hourly incremental window, or because the
+// pre-upsert version of applyWrites silently dropped subsequent inserts.
+//
+// Bypasses the timestamp filter: walks Stagging for rows where the gallery
+// is empty, re-hydrates each by ListingId directly, refreshes the row, and
+// drives processOneStaggingRow inline so as many as fit promote within the
+// 50s budget. Anything still pending is picked up by the per-minute cron.
+export async function reviveStrandedStagging() {
+    const deadline = Date.now() + TEST_PANEL_DEADLINE_MS;
+    invalidateVillageCache();
+
+    const query = await wixData.query('Stagging').limit(100).find({ suppressAuth: true });
+    const empties = (query.items || []).filter(r =>
+        !Array.isArray(r.listingImageGallery) || r.listingImageGallery.length === 0
+    );
+
+    const results = [];
+    for (const row of empties) {
+        if (Date.now() > deadline) {
+            results.push({ id: row._id, skipped: 'deadline' });
+            continue;
+        }
+        const raw = await hydrateListing(row._id);
+        if (!raw) {
+            results.push({ id: row._id, error: 'not found in MLSGrid' });
+            continue;
+        }
+        const village = await matchVillage(raw.SubdivisionName);
+        if (!village) {
+            results.push({ id: row._id, error: 'no village match', subdivision: raw.SubdivisionName });
+            continue;
+        }
+
+        const item = await transformListing(raw, village);
+        const merged = await mergeGallery(item.listingImageGallery, row.listingImageGallery);
+
+        await wixData.update('Stagging', {
+            ...row,
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: item.listingPrimaryImage,
+            isPublished: false
+        }, { suppressAuth: true });
+
+        const drained = await processOneStaggingRow(row._id);
+        results.push({
+            id: row._id,
+            subdivision: raw.SubdivisionName,
+            village: village.villageName,
+            mlsGallerySize: Array.isArray(item.listingImageGallery) ? item.listingImageGallery.length : 0,
+            mergedGallerySize: merged.length,
+            drained
+        });
+    }
+
+    return { scanned: query.items.length, found: empties.length, results };
+}
+
 // Manual drain trigger. Use this if you want to force the Stagging drain
 // outside the hourly cron - the cron will hit the same code path on its own
 // schedule, but this lets you make progress faster during catch-up.
