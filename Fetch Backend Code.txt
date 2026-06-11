@@ -258,17 +258,13 @@ export function getStaging() { //array of Id's
 export function getNumber(number) {
     let isNUm = typeof (number)
     if (isNUm === "number") {
-        number = number.toString()
-        if (number.length === 6) {
-            let shortNum = `$${number.slice(0, 1)   }00s`
-            return shortNum
-        } else if (number.length >= 7 && number.length <= 9) {
-            let numLen = number.length
-            let shortNum = numLen === 7 ? number.slice(0, 1) : numLen === 8 ? number.slice(0, 2) : numLen === 9 && number.slice(0, 3)
-            return `${shortNum}M+`
-        } else {
-            return `$${number}`
-        }
+        if (number < 500000) return 'Under $500k'
+        if (number < 1000000) return '$500k - $1M'
+        if (number < 2000000) return '$1M - $2M'
+        if (number < 5000000) return '$2M - $5M'
+        if (number < 10000000) return '$5M - $10M'
+        if (number < 15000000) return '$10M - $15M'
+        return '$15M+'
     } else {
         return isNUm
     }
