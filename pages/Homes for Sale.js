@@ -29,12 +29,23 @@ const PRICE_TAG_ORDER = [
   "$15M+"
 ];
 
+// Home Type dropdown grouping: display-only normalization. The listing data
+// keeps its true MLS subtype (per MLS display rules); the dropdown just
+// presents grouped subtypes under one option, and filtering matches every
+// underlying subtype in the group.
+const HOME_TYPE_GROUPS = {
+  "Condo - Hotel": "Condominium"
+};
+
+// Built by setupHomeTypeDropdown: dropdown label -> raw homeType values.
+let homeTypeValuesByLabel = {};
+
 $w.onReady(async function () {
   const homes = await getAllItems(HOMES_COLLECTION_ID);
   const neighborhoods = await getAllItems(NEIGHBORHOODS_COLLECTION_ID);
 
   setupPriceDropdown("#dropdown2", homes, PRICE_FIELD);
-  setupTextDropdown("#dropdown7", homes, HOME_TYPE_FIELD, "All");
+  setupHomeTypeDropdown("#dropdown7", homes, HOME_TYPE_FIELD);
   setupNumberDropdown("#dropdown4", homes, BEDROOMS_FIELD, "All");
   setupAmenitiesDropdown("#dropdown5", neighborhoods, AMENITIES_FIELD);
   setupTextDropdown("#dropdown6", homes, GARAGES_FIELD, "All", garageSortValue);
@@ -75,6 +86,39 @@ function setupPriceDropdown(dropdownId, items, fieldId) {
     ...uniqueTags.map(tag => ({
       label: tag,
       value: tag
+    }))
+  ];
+
+  $w(dropdownId).value = "All";
+}
+
+function setupHomeTypeDropdown(dropdownId, items, fieldId) {
+  homeTypeValuesByLabel = {};
+
+  items.forEach(item => {
+    const value = item[fieldId];
+
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      const rawValue = String(value).trim();
+      const label = HOME_TYPE_GROUPS[rawValue] || rawValue;
+
+      if (!homeTypeValuesByLabel[label]) {
+        homeTypeValuesByLabel[label] = [];
+      }
+      if (!homeTypeValuesByLabel[label].includes(rawValue)) {
+        homeTypeValuesByLabel[label].push(rawValue);
+      }
+    }
+  });
+
+  const labels = Object.keys(homeTypeValuesByLabel)
+    .sort((a, b) => a.localeCompare(b));
+
+  $w(dropdownId).options = [
+    { label: "All", value: "All" },
+    ...labels.map(label => ({
+      label: label,
+      value: label
     }))
   ];
 
@@ -181,7 +225,11 @@ async function applyFilters() {
   }
 
   if (selectedHomeType && selectedHomeType !== "All") {
-    filter = filter.eq(HOME_TYPE_FIELD, selectedHomeType);
+    // A dropdown label can cover several underlying MLS subtypes (e.g.
+    // "Condominium" matches both Condominium and Condo - Hotel). hasSome on
+    // a text field behaves like SQL IN.
+    const rawValues = homeTypeValuesByLabel[selectedHomeType] || [selectedHomeType];
+    filter = filter.hasSome(HOME_TYPE_FIELD, rawValues);
   }
 
   if (selectedBedrooms && selectedBedrooms !== "All") {
