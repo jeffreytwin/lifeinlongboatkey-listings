@@ -38,13 +38,13 @@ function formatPrice(n) {
 
 function priceBucket(n) {
     if (typeof n !== 'number') return String(n);
-    const s = n.toString();
-    if (s.length === 6) return `$${s.slice(0, 1)}00s`;
-    if (s.length >= 7 && s.length <= 9) {
-        const head = s.length === 7 ? s.slice(0, 1) : s.length === 8 ? s.slice(0, 2) : s.slice(0, 3);
-        return `${head}M+`;
-    }
-    return `$${s}`;
+    if (n < 500000) return 'Under $500k';
+    if (n < 1000000) return '$500k - $1M';
+    if (n < 2000000) return '$1M - $2M';
+    if (n < 5000000) return '$2M - $5M';
+    if (n < 10000000) return '$5M - $10M';
+    if (n < 15000000) return '$10M - $15M';
+    return '$15M+';
 }
 
 function formatSquareFeet(v) {
