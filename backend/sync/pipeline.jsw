@@ -91,7 +91,10 @@ export function transformListing(data, village) {
         listingPrice: typeof data.ListPrice === 'number' ? formatPrice(data.ListPrice) : data.ListPrice,
         listingPricePure: data.ListPrice,
         listingPriceSort: [priceBucket(data.ListPrice)],
-        homeType: data.PropertySubType,
+        // PropertySubType is blank for vacant land in the mfrmls feed
+        // (subtypes only exist under Residential), so fall back to the
+        // PropertyType - 'Land' - to keep the Home Type filter usable.
+        homeType: data.PropertySubType || titleCase(data.PropertyType),
         village: village ? village.villageName : null,
         village1: village ? village.village1 : null,
         villageLink: village ? village.villageURL : null,
