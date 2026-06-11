@@ -112,6 +112,72 @@ export async function testHydrateAndInsertOne(listingId) {
     };
 }
 
+// Forced rebuild for listings whose photos are broken (e.g. uploaded by the
+// old dashboard path). The steady-state sync can't repair these on its own:
+// diff.hasMeaningfulChange skips rows without price/status/timestamp changes,
+// and mergeGallery deliberately preserves already-wix-hosted gallery srcs -
+// including broken ones. So for each ID we trash the row's wix media, delete
+// the row, and re-stage it fresh from MLSGrid with no gallery merge, which
+// forces every photo to re-upload through the normal Stagging flow.
+//
+// The listing is off the site between teardown and promotion (minutes). Rows
+// that don't finish uploading within this invocation's budget are left in
+// Stagging and picked up by the cron drain.
+export async function refreshListings(ids) {
+    const deadline = Date.now() + TEST_PANEL_DEADLINE_MS;
+    invalidateVillageCache();
+
+    if (!Array.isArray(ids) || !ids.length) {
+        return { error: 'no ids provided' };
+    }
+
+    const staged = [];
+    for (const rawId of ids) {
+        const raw = await hydrateListing(rawId);
+        if (!raw) {
+            staged.push({ id: rawId, error: 'not found in MLSGrid' });
+            continue;
+        }
+        const storedId = raw.ListingId;
+
+        const village = await matchVillage(raw.SubdivisionName);
+        if (!village) {
+            staged.push({ id: storedId, error: 'no village match', subdivision: raw.SubdivisionName });
+            continue;
+        }
+
+        // Tear down the existing row and its broken media.
+        const existing = await wixData.get(COLLECTION, storedId, { suppressAuth: true }).catch(() => null);
+        if (existing) {
+            const wixSrcs = Array.isArray(existing.listingImageGallery)
+                ? existing.listingImageGallery.filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http')).map(g => g.src)
+                : [];
+            if (wixSrcs.length) await trashMedia(wixSrcs);
+            await wixData.remove(COLLECTION, storedId, { suppressAuth: true }).catch(() => null);
+        }
+        // Clear any stranded Stagging row so the fresh insert doesn't collide.
+        await wixData.remove('Stagging', storedId, { suppressAuth: true }).catch(() => null);
+
+        const item = await transformListing(raw, village);
+        try {
+            await wixData.insert('Stagging', { ...item, isPublished: false }, { suppressAuth: true });
+            staged.push({
+                id: storedId,
+                village: village.villageName,
+                gallerySize: Array.isArray(item.listingImageGallery) ? item.listingImageGallery.length : 0,
+                hadExistingRow: !!existing
+            });
+        } catch (err) {
+            staged.push({ id: storedId, error: `Stagging insert failed: ${err && err.message}` });
+        }
+    }
+
+    // Drain via the per-row HTTP fan-out so each row gets its own upload
+    // budget. Anything left over promotes via the cron.
+    const drained = await drainStaggingFanOut(deadline);
+    return { requested: ids.length, staged, drained };
+}
+
 // One-time population from the bootstrap-ids master list. Now routes new
 // rows through Stagging (per applyWrites), so the bootstrap promotes rows to
 // HousesforSale only as photos finish - visitors never see incomplete rows.

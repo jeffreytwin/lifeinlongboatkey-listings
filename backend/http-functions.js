@@ -5,7 +5,7 @@ import { runSync } from 'backend/sync/pipeline';
 import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
 import { processOneStaggingRow } from 'backend/sync/stagging';
 import { seedVillages } from 'backend/sync/seed';
-import { reclassifyHousesforSaleByVillage } from 'backend/sync/run';
+import { reclassifyHousesforSaleByVillage, refreshListings } from 'backend/sync/run';
 
 const CHAIN_DEADLINE_MS = 50 * 1000;
 
@@ -81,6 +81,24 @@ export async function post_processStaggingRow(request) {
         const body = await request.body.json();
         if (!body || !body.rowId) return badRequest({ body: 'rowId required' });
         const result = await processOneStaggingRow(body.rowId);
+        return jsonResponse(200, result);
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Forced rebuild of specific listings: trashes each row's media, deletes the
+// row, and re-stages it from MLSGrid so every photo re-uploads fresh. Use for
+// listings whose images are broken (the steady-state sync preserves existing
+// wix-hosted images and won't repair them). Body: {"ids": ["MFRA4...", ...]}
+export async function post_refreshListings(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const body = await request.body.json();
+        if (!body || !Array.isArray(body.ids) || !body.ids.length) {
+            return badRequest({ body: 'ids array required' });
+        }
+        const result = await refreshListings(body.ids);
         return jsonResponse(200, result);
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });
