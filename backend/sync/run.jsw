@@ -391,7 +391,33 @@ export async function reclassifyHousesforSaleByVillage(villageName) {
     for (const row of rows) {
         const newVillage = await matchVillage(row.subdivision);
         if (newVillage && newVillage.villageName === villageName) {
-            unchanged += 1;
+            // Same village, but refresh the dependent fields - the Villages
+            // row's URL/id/tags may have changed even when the name didn't.
+            const stale = row.villageLink !== newVillage.villageURL ||
+                row.village1 !== newVillage.village1 ||
+                row.villageSortHelp !== newVillage.villageSortHelp ||
+                (row.blueTag1 || '') !== (newVillage.blueTag1 || '') ||
+                (row.purpleTag1 || '') !== (newVillage.purpleTag1 || '') ||
+                (row.greenTag1 || '') !== (newVillage.greenTag1 || '');
+            if (!stale) {
+                unchanged += 1;
+                continue;
+            }
+            try {
+                await wixData.update(COLLECTION, {
+                    ...row,
+                    villageLink: newVillage.villageURL,
+                    village1: newVillage.village1,
+                    villageSortHelp: newVillage.villageSortHelp,
+                    blueTag1: newVillage.blueTag1 || '',
+                    purpleTag1: newVillage.purpleTag1 || '',
+                    greenTag1: newVillage.greenTag1 || ''
+                }, { suppressAuth: true });
+                reassigned += 1;
+                reassignedSummary.push({ id: row._id, subdivision: row.subdivision, to: villageName, refreshedFieldsOnly: true });
+            } catch (err) {
+                console.log('reclassify refresh failed for', row._id, err && err.message);
+            }
             continue;
         }
         if (newVillage) {
