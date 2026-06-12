@@ -30,3 +30,32 @@ export async function seedVillages() {
     invalidateVillageCache();
     return { total: toSave.length, inserted, updated };
 }
+
+// Deletes Villages rows whose matchPattern is not present in the seed.
+// seedVillages only upserts, so legacy rows (pre-seed manual entries, retired
+// villages) survive re-seeding and can shadow correct matches - a stale row
+// with a high `order` wins matchVillage over the seeded entry. Run this after
+// seedVillages to bring the collection exactly in line with the seed. Returns
+// the deleted rows' key fields for review.
+export async function pruneVillages() {
+    const seedPatterns = new Set(VILLAGE_SEED.map(e => e.matchPattern));
+    const existing = await wixData.query('Villages').limit(1000).find({ suppressAuth: true });
+
+    const strays = existing.items.filter(item => !seedPatterns.has(item.matchPattern));
+    const deleted = [];
+    for (const row of strays) {
+        try {
+            await wixData.remove('Villages', row._id, { suppressAuth: true });
+            deleted.push({
+                matchPattern: row.matchPattern || null,
+                villageName: row.villageName || null,
+                order: row.order != null ? row.order : null
+            });
+        } catch (err) {
+            console.log('pruneVillages remove failed for', row._id, err && err.message);
+        }
+    }
+
+    invalidateVillageCache();
+    return { scanned: existing.items.length, deleted: deleted.length, deletedRows: deleted };
+}
