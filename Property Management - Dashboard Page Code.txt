@@ -79,12 +79,13 @@ $w.onReady(async function () {
       let isBayIsles = subDivisionName.search("bay isles"); // you may want tighter patterning if MLS varies
       let isBayouHammock = subDivisionName.search("bayou hammock");
       let isBayportBeachTennis = subDivisionName.search("bayport"); // “bayport beach & tennis”
+      let isBayviewEstates = subDivisionName.search("bayview estates");
       let isBeachCastle = subDivisionName.search("beach castle");
       let isBeachHarborClub = subDivisionName.search("beach harbor club");
       let isBeachcomber = subDivisionName.search("beachcomber");
       let isBeachplace = subDivisionName.search("beachplace");
       let isButtonwoodCove = subDivisionName.search("buttonwood cove");
-      let isButtonwoodHarbor = subDivisionName.search("buttonwood cove");
+      let isButtonwoodHarbor = subDivisionName.search("buttonwood harbor");
       let isCabanaBeachClub = subDivisionName.search("cabana beach club");
       let isCasaDelMar = subDivisionName.search("casa del mar");
       let isCastillian = subDivisionName.search("castillian");
@@ -106,7 +107,6 @@ $w.onReady(async function () {
       let isHarbourLinks = subDivisionName.search("harbour links");
       let isHarbourOaks = subDivisionName.search("harbour oaks");
       let isHarbourVillaClub = subDivisionName.search("harbour villa club");
-      let isHarrisBayou = subDivisionName.search("harris bayou");
       let isHideawayBay = subDivisionName.search("hideaway bay");
       let isInfinity = subDivisionName.search("infinity");
       let isInnOnTheBeach = subDivisionName.search("inn on the beach");
@@ -196,6 +196,7 @@ $w.onReady(async function () {
           isBayIsles !== -1 ||
           isBayouHammock !== -1 ||
           isBayportBeachTennis !== -1 ||
+          isBayviewEstates !== -1 ||
           isBeachCastle !== -1 ||
           isBeachHarborClub !== -1 ||
           isBeachcomber !== -1 ||
@@ -223,7 +224,6 @@ $w.onReady(async function () {
           isHarbourLinks !== -1 ||
           isHarbourOaks !== -1 ||
           isHarbourVillaClub !== -1 ||
-          isHarrisBayou !== -1 ||
           isHideawayBay !== -1 ||
           isInfinity !== -1 ||
           isInnOnTheBeach !== -1 ||
@@ -333,7 +333,7 @@ $w.onReady(async function () {
         if (isBayIsles !== -1) {
           valData['Village'] = "Bay Isles - Harbor Section";
           valData['villageSortHelp'] = "Bay Isles - Harbor Section";
-          valData['VillageURL'] = `${baseURL}/neighborhood/bay-isles-harbor`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/bay-isles-harbor-section`;
           valData['village1'] = "bc8b3074-9ef5-4cf7-88bd-1886c7df5c8e";
         }
         if (isBayouHammock !== -1) {
@@ -345,8 +345,14 @@ $w.onReady(async function () {
         if (isBayportBeachTennis !== -1) {
           valData['Village'] = "Bayport Beach & Tennis";
           valData['villageSortHelp'] = "Bayport Beach & Tennis";
-          valData['VillageURL'] = `${baseURL}/neighborhood/bayport-beach-%26-tennis`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/bayport-beach-and-tennis`;
           valData['village1'] = "fa3c3321-c938-4f6c-b778-278a5c2444fc";
+        }
+        if (isBayviewEstates !== -1) {
+          valData['Village'] = "Bayview Estates";
+          valData['villageSortHelp'] = "Bayview Estates";
+          valData['VillageURL'] = `${baseURL}/neighborhood/bayview-estates`;
+          valData['village1'] = "a52bc94a-6483-4d28-8358-8799d52ddc87";
         }
         if (isBeachCastle !== -1) {
           valData['Village'] = "Beach Castle";
@@ -427,15 +433,15 @@ $w.onReady(async function () {
           valData['village1'] = "55bd3c37-f295-407f-ade6-7b29bf08de40";
         }
         if (isCoreysLanding !== -1) {
-          valData['Village'] = "Corey's Landing";
-          valData['villageSortHelp'] = "Corey's Landing";
-          valData['VillageURL'] = `${baseURL}/neighborhood/corey's-landing-(bay-isles)`;
+          valData['Village'] = "Corey's Landing (Bay Isles)";
+          valData['villageSortHelp'] = "Corey's Landing (Bay Isles)";
+          valData['VillageURL'] = `${baseURL}/neighborhood/coreys-landing-bay-isles`;
           valData['village1'] = "fa659528-eda8-49bc-b683-13c13a17d92c";
         }
         if (isCountryClubShores !== -1) {
           valData['Village'] = "Country Club Shores";
           valData['villageSortHelp'] = "Country Club Shores";
-          valData['VillageURL'] = `${baseURL}/neighborhood/country-club-shores-(secs-i---v)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/country-club-shores`;
           valData['village1'] = "32f9f98c-3469-42a7-b581-961b3a2514fb";
         }
         if (isDreamIsland !== -1) {
@@ -453,7 +459,7 @@ $w.onReady(async function () {
         if (isEmeraldPointe !== -1) {
           valData['Village'] = "Emerald Pointe (Bay Isles)";
           valData['villageSortHelp'] = "Emerald Pointe (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/emerald-pointe-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/emerald-pointe-bay-isles`;
           valData['village1'] = "aa05a451-396d-4ece-a5b6-6ff66fa8f517";
         }
         if (isEnProvence !== -1) {
@@ -465,13 +471,13 @@ $w.onReady(async function () {
         if (isFairwayBay !== -1) {
           valData['Village'] = "Fairway Bay (Bay Isles)";
           valData['villageSortHelp'] = "Fairway Bay (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/fairway-bay-(longboat-key-club)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/fairway-bay-bay-isles`;
           valData['village1'] = "fe044dda-6a71-4520-b580-f08d0d5bb292";
         }
         if (isGrandBay !== -1) {
           valData['Village'] = "Grand Bay (Bay Isles)";
           valData['villageSortHelp'] = "Grand Bay (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/grand-bay`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/grand-bay-bay-isles`;
           valData['village1'] = "19f93ef7-967f-45da-84cd-9bfa22dab778";
         }
         if (isGrandMariner !== -1) {
@@ -483,25 +489,25 @@ $w.onReady(async function () {
         if (isHarbourCircle !== -1) {
           valData['Village'] = "Harbour Circle (Bay Isles)";
           valData['villageSortHelp'] = "Harbour Circle (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/harbour-circle-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/harbour-circle-bay-isles`;
           valData['village1'] = "216f06af-96ee-47aa-8991-2a8013f98439";
         }
         if (isHarbourCourt !== -1) {
           valData['Village'] = "Harbour Court (Bay Isles)";
           valData['villageSortHelp'] = "Harbour Court (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/harbour-court-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/harbour-court-bay-isles`;
           valData['village1'] = "37691463-0f0a-4cba-981f-794d79cffe33";
         }
         if (isHarbourLinks !== -1) {
           valData['Village'] = "Harbour Links (Bay Isles)";
           valData['villageSortHelp'] = "Harbour Links (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/harbour-links`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/harbour-links-bay-isles`;
           valData['village1'] = "c94a290d-de49-43cc-a507-fc6397f29d5b";
         }
         if (isHarbourOaks !== -1) {
           valData['Village'] = "Harbour Oaks (Bay Isles)";
           valData['villageSortHelp'] = "Harbour Oaks (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/harbour-oaks-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/harbour-oaks-bay-isles`;
           valData['village1'] = "57962457-4ff2-4a9d-a0a7-fbc03635239f";
         }
         if (isHarbourVillaClub !== -1) {
@@ -510,12 +516,6 @@ $w.onReady(async function () {
           valData['VillageURL'] = `${baseURL}/neighborhood/harbour-villa-club`;
           valData['village1'] = "b18194e8-0315-4706-bce3-e337d8807875";
         }
-        if (isHarrisBayou !== -1) {
-          valData['Village'] = "Harris Bayou";
-          valData['villageSortHelp'] = "Harris Bayou";
-          valData['VillageURL'] = `${baseURL}/neighborhood/harris-bayou`;
-          valData['village1'] = "d8e5e924-000e-4955-bfc4-5f5b673943b4";
-          }
         if (isHideawayBay !== -1) {
           valData['Village'] = "Hideaway Bay";
           valData['villageSortHelp'] = "Hideaway Bay";
@@ -529,15 +529,15 @@ $w.onReady(async function () {
           valData['village1'] = "6fbd88ea-c572-4b36-9345-2669052e7275";
         }
         if (isInnOnTheBeach !== -1) {
-          valData['Village'] = "Inn on the Beach (Longboat Key Club)";
-          valData['villageSortHelp'] = "Inn on the Beach (Longboat Key Club)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/longboat-key-club-condos`;
+          valData['Village'] = "Inn on the Beach";
+          valData['villageSortHelp'] = "Inn on the Beach";
+          valData['VillageURL'] = `${baseURL}/neighborhood/inn-on-the-beach`;
           valData['village1'] = "2df718de-ccc3-4f0b-956d-ece986de9b6b";
         }
         if (isIslanderClub !== -1) {
           valData['Village'] = "Islander Club";
           valData['villageSortHelp'] = "Islander Club";
-          valData['VillageURL'] = `${baseURL}/neighborhood/islander-club-(longboat-key-club)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/islander-club`;
           valData['village1'] = "03975263-8664-41d6-a36f-83d7ebec9970";
         }
         if (isIslandsWest !== -1) {
@@ -553,9 +553,9 @@ $w.onReady(async function () {
           valData['village1'] = "675707ed-eaab-4c93-921d-9a4386b5bddf";
         }
         if (isLAmbiance !== -1) {
-          valData['Village'] = "L'Ambiance (Longboat Key Club)";
-          valData['villageSortHelp'] = "L'Ambiance (Longboat Key Club)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/l'ambiance-(bay-isles)`;
+          valData['Village'] = "L'Ambiance";
+          valData['villageSortHelp'] = "L'Ambiance";
+          valData['VillageURL'] = `${baseURL}/neighborhood/ambiance-bay-isles`;
           valData['village1'] = "d7953eac-c9fa-4931-9f3b-1f17ea5c852f";
         }
         if (isLaFirenza !== -1) {
@@ -621,20 +621,20 @@ $w.onReady(async function () {
         if (isLongboatKeyEstates !== -1) {
           valData['Village'] = "Longboat Key Estates";
           valData['villageSortHelp'] = "Longboat Key Estates";
-          valData['VillageURL'] = `${baseURL}/neighborhood/weston-pointe`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/longboat-key-estates`;
           valData['village1'] = "6aa3f7f7-1ef2-4037-901f-c691d566a63c";
         }
         if (isLongboatKeyTowers !== -1) {
-          valData['Village'] = "Longboat Key Towers (Longboat Key Club)";
-          valData['villageSortHelp'] = "Longboat Key Towers (Longboat Key Club)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/longboat-key-towers-(longboat-key-club)`;
+          valData['Village'] = "Longboat Key Towers";
+          valData['villageSortHelp'] = "Longboat Key Towers";
+          valData['VillageURL'] = `${baseURL}/neighborhood/longboat-key-towers`;
           valData['village1'] = "a8e5bc7b-2ee5-4df1-99da-b6b58fbabdd3";
           }
         if (isLongboatLanding !== -1) {
           valData['Village'] = "Longboat Landing";
           valData['villageSortHelp'] = "Longboat Landing";
-          valData['VillageURL'] = `${baseURL}/neighborhood/longboat-key-towers-(longboat-key-club)`;
-          valData['village1'] = "a8e5bc7b-2ee5-4df1-99da-b6b58fbabdd3";
+          valData['VillageURL'] = `${baseURL}/neighborhood/longboat-landing`;
+          valData['village1'] = "890c95c6-ab4b-46a4-b212-854f3be6826f";
         }
         if (isLongboatShores !== -1) {
           valData['Village'] = "Longboat Shores";
@@ -642,7 +642,7 @@ $w.onReady(async function () {
           valData['VillageURL'] = `${baseURL}/neighborhood/longboat-shores`;
           valData['village1'] = "93b2bc88-383d-45b0-aab4-b54100364e02";
         }
-        if (isLongboatShores !== -1) {
+        if (isLongboatTerrace !== -1) {
           valData['Village'] = "Longboat Terrace";
           valData['villageSortHelp'] = "Longboat Terrace";
           valData['VillageURL'] = `${baseURL}/neighborhood/longboat-terrace`;
@@ -651,7 +651,7 @@ $w.onReady(async function () {
         if (isMarinaBay !== -1) {
           valData['Village'] = "Marina Bay (Bay Isles)";
           valData['villageSortHelp'] = "Marina Bay (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/marina-bay-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/marina-bay-bay-isles`;
           valData['village1'] = "1c21b5c9-ecd5-471d-a656-90a32d034f78";
         }
         if (isNeptune !== -1) {
@@ -673,8 +673,8 @@ $w.onReady(async function () {
           valData['village1'] = "fc4ab52b-3dde-4b36-9b85-595336f4273b";
         }
         if (isPierre !== -1) {
-          valData['Village'] = "Pierre (Longboat Key Club)";
-          valData['villageSortHelp'] = "Pierre (Longboat Key Club)";
+          valData['Village'] = "Pierre";
+          valData['villageSortHelp'] = "Pierre";
           valData['VillageURL'] = `${baseURL}/neighborhood/pierre`;
           valData['village1'] = "37c56e34-4722-467a-99e4-d5884eb0a8e9";
         }
@@ -697,45 +697,45 @@ $w.onReady(async function () {
           valData['village1'] = "ea35bf0a-9f97-4b59-a398-aab3e55bca23";
         }
         if (isPrivateer !== -1) {
-          valData['Village'] = "Privateer (Longboat Key Club)";
-          valData['villageSortHelp'] = "Privateer (Longboat Key Club)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/privateer-(longboat-key-club)`;
+          valData['Village'] = "Privateer";
+          valData['villageSortHelp'] = "Privateer";
+          valData['VillageURL'] = `${baseURL}/neighborhood/privateer`;
           valData['village1'] = "10b4f62e-3e2c-46b8-b568-858b71f81473";
         }
         if (isPromenade !== -1) {
           valData['Village'] = "Promenade";
           valData['villageSortHelp'] = "Promenade";
-          valData['VillageURL'] = `${baseURL}/neighborhood/pomenade-new`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/pomenade`;
           valData['village1'] = "abd8f137-2e49-45f7-bef9-d42760495421";
         }
         if (isQueensHarbour !== -1) {
-          valData['Village'] = "Queens Harbour";
-          valData['villageSortHelp'] = "Queens Harbour";
-          valData['VillageURL'] = `${baseURL}/neighborhood/queens-harbour`;
+          valData['Village'] = "Queens Harbour (Bay Isles)";
+          valData['villageSortHelp'] = "Queens Harbour (Bay Isles)";
+          valData['VillageURL'] = `${baseURL}/neighborhood/queens-harbour-bay-isles`;
           valData['village1'] = "d25c7035-7cd6-4a74-a476-11eb9307a5d0";
         }
         if (isRegentCourt !== -1) {
-          valData['Village'] = "Regent Court (Longboat Key Club)";
-          valData['villageSortHelp'] = "Regent Court (Longboat Key Club)";
+          valData['Village'] = "Regent Court";
+          valData['villageSortHelp'] = "Regent Court";
           valData['VillageURL'] = `${baseURL}/neighborhood/regent-court`;
           valData['village1'] = "adc9f424-258d-45cf-96d1-be8f462a39cf";
         }
         if (isRegentPlace !== -1) {
-          valData['Village'] = "Regent Place (Longboat Key Club)";
-          valData['villageSortHelp'] = "Regent Place (Longboat Key Club)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/regent-place-(longboat-key-club)`;
+          valData['Village'] = "Regent Place";
+          valData['villageSortHelp'] = "Regent Place";
+          valData['VillageURL'] = `${baseURL}/neighborhood/regent-place`;
           valData['village1'] = "3c840976-2580-4628-83b7-cfb0f37725ee";
         }
         if (isSabalCove !== -1) {
-          valData['Village'] = "Sabal Cove";
-          valData['villageSortHelp'] = "Sabal Cove";
-          valData['VillageURL'] = `${baseURL}/neighborhood/queens-harbour-(bay-isles)`;
+          valData['Village'] = "Sabal Cove (Bay Isles)";
+          valData['villageSortHelp'] = "Sabal Cove (Bay Isles)";
+          valData['VillageURL'] = `${baseURL}/neighborhood/sabal-cove-bay-isles`;
           valData['village1'] = "c98eb7ae-d316-42ad-ba49-403a4a2a77f1";
         }
         if (isSageLongboatKey !== -1) {
           valData['Village'] = "Sage Longboat Key";
           valData['villageSortHelp'] = "Sage Longboat Key";
-          valData['VillageURL'] = `${baseURL}/neighborhood/sabal-cove-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/sage-longboat-key`;
           valData['village1'] = "362f3e3b-46cd-4ef2-9c23-c03d912c90a0";
         }
         if (isSandCayBeachResort !== -1) {
@@ -747,13 +747,13 @@ $w.onReady(async function () {
         if (isSandsPoint !== -1) {
           valData['Village'] = "Sands Point";
           valData['villageSortHelp'] = "Sands Point";
-          valData['VillageURL'] = `${baseURL}/neighborhood/sage-longboat-key`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/sands-point`;
           valData['village1'] = "6e850cab-adb3-43af-a7cc-fca98302c4f9";
         }
         if (isSeaGateClub !== -1) {
           valData['Village'] = "Sea Gate Club";
           valData['villageSortHelp'] = "Sea Gate Club";
-          valData['VillageURL'] = `${baseURL}/neighborhood/sands-point`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/sea-gate-club`;
           valData['village1'] = "a6c98916-cada-49b0-b3d5-1fa7a2a1248f";
         }
         if (isSeaGrapeInn !== -1) {
@@ -783,13 +783,13 @@ $w.onReady(async function () {
         if (isSeaplace !== -1) {
           valData['Village'] = "Seaplace";
           valData['villageSortHelp'] = "Seaplace";
-          valData['VillageURL'] = `${baseURL}/neighborhood/sea-gate-club`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/seaplace`;
           valData['village1'] = "3546f1bc-80df-4566-b043-6f2aefc16a19";
         }
         if (isSeascape !== -1) {
           valData['Village'] = "Seascape";
           valData['villageSortHelp'] = "Seascape";
-          valData['VillageURL'] = `${baseURL}/neighborhood/seaplace`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/seascape`;
           valData['village1'] = "77f01d50-ed3f-411c-aca1-06739ef659c6";
         }
         if (isSeaPines !== -1) {
@@ -819,19 +819,19 @@ $w.onReady(async function () {
         if (isSpanishMainYachtClub !== -1) {
           valData['Village'] = "Spanish Main Yacht Club (55+)";
           valData['villageSortHelp'] = "Spanish Main Yacht Club (55+)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/spanish-main-yacht-club-(55%2B)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/spanish-main-yacht-club`;
           valData['village1'] = "dea2055b-e01b-4de5-8dd3-2e417a9214e1";
         }
         if (isSunsetBeach !== -1) {
           valData['Village'] = "Sunset Beach";
           valData['villageSortHelp'] = "Sunset Beach";
-          valData['VillageURL'] = `${baseURL}/neighborhood/seaside`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/sunset-beach`;
           valData['village1'] = "6a428652-a704-4bfc-92e4-5dafb18abc68";
         }
         if (isSuttonPlace !== -1) {
           valData['Village'] = "Sutton Place";
           valData['villageSortHelp'] = "Sutton Place";
-          valData['VillageURL'] = `${baseURL}/neighborhood/sunset-beach`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/sutton-place`;
           valData['village1'] = "a51658d2-e2ca-4836-a411-4a36a3f54d23";
         }
         if (isTangerineBayClub !== -1) {
@@ -843,7 +843,7 @@ $w.onReady(async function () {
         if (isTheBayou !== -1) {
           valData['Village'] = "The Bayou (Bay Isles)";
           valData['villageSortHelp'] = "The Bayou (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/the-bayou-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-bayou-bay-isles`;
           valData['village1'] = "98eb305d-0b83-496c-8b87-d5982cef505c";
         }
         if (isTheBeachOnLongboatKey !== -1) {
@@ -853,33 +853,33 @@ $w.onReady(async function () {
           valData['village1'] = "54b293fa-3cee-472b-a6c1-7a27f38172d8";
         }
         if (isTheBeaches !== -1) {
-          valData['Village'] = "The Beaches (Longboat Key Club)";
-          valData['villageSortHelp'] = "The Beaches (Longboat Key Club)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/the-beaches-(longboat-key-club)`;
+          valData['Village'] = "The Beaches";
+          valData['villageSortHelp'] = "The Beaches";
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-beaches`;
           valData['village1'] = "77e7e1ce-f445-46a3-8dcf-0740aff9034b";
         }
         if (isTheGrande !== -1) {
           valData['Village'] = "The Grande at Longboat Key";
           valData['villageSortHelp'] = "The Grande at Longboat Key";
-          valData['VillageURL'] = `${baseURL}/neighborhood/grande-at-longboat-key`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-grande-at-longboat-key`;
           valData['village1'] = "f72ab8ac-0088-4d8c-a134-6d4697d9b73f";
         }
         if (isTheGrande2 !== -1) {
           valData['Village'] = "The Grande at Longboat Key";
           valData['villageSortHelp'] = "The Grande at Longboat Key";
-          valData['VillageURL'] = `${baseURL}/neighborhood/grande-at-longboat-key`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-grande-at-longboat-key`;
           valData['village1'] = "f72ab8ac-0088-4d8c-a134-6d4697d9b73f";
         }
         if (isTheResidencesAtStRegis !== -1) {
           valData['Village'] = "The Residences at The St. Regis";
           valData['villageSortHelp'] = "The Residences at The St. Regis";
-          valData['VillageURL'] = `${baseURL}/neighborhood/tennis-gardens-(longboat-key-club`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-residences-at-the-st-regis`;
           valData['village1'] = "34eb509c-19b7-4e0a-968c-fa257529bf62";
         }
         if (isTheSanctuary !== -1) {
-          valData['Village'] = "The Sanctuary (Longboat Key Club)";
-          valData['villageSortHelp'] = "The Sanctuary (Longboat Key Club)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/the-residences-at-the-st.-regis`;
+          valData['Village'] = "The Sanctuary";
+          valData['villageSortHelp'] = "The Sanctuary";
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-sanctuary`;
           valData['village1'] = "6ca2f7b7-3f18-4ace-8566-e86ccee2b4d3";
         }
         if (isTheShore !== -1) {
@@ -921,7 +921,7 @@ $w.onReady(async function () {
         if (isWaterClub !== -1) {
           valData['Village'] = "Water Club";
           valData['villageSortHelp'] = "Water Club";
-          valData['VillageURL'] = `${baseURL}/neighborhood/the-sanctuary-(longboat-key-club)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/water-club`;
           valData['village1'] = "f87c271c-63a1-4fb8-89fd-2dc3f452a6b9";
         }
         if (isWestchester !== -1) {
@@ -933,7 +933,7 @@ $w.onReady(async function () {
         if (isWestonPointe !== -1) {
           valData['Village'] = "Weston Pointe (Bay Isles)";
           valData['villageSortHelp'] = "Weston Pointe (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/weston-pointe-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/weston-pointe-bay-isles`;
           valData['village1'] = "c64ba845-05e9-4958-bde4-80b6c4e2e721";
         }
         if (isWhitneyBeach !== -1) {
@@ -945,7 +945,7 @@ $w.onReady(async function () {
         if (isWindingOaks !== -1) {
           valData['Village'] = "Winding Oaks (Bay Isles)";
           valData['villageSortHelp'] = "Winding Oaks (Bay Isles)";
-          valData['VillageURL'] = `${baseURL}/neighborhood/winding-oaks-(bay-isles)`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/winding-oaks-bay-isles`;
           valData['village1'] = "f2538b9a-4494-4154-b8fe-60c5db7a3cc5";
         }
         if (isWindwardBay !== -1) {
