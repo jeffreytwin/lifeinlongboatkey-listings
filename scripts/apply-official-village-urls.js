@@ -54,7 +54,7 @@ const OFFICIAL = {
   '03975263-8664-41d6-a36f-83d7ebec9970': ['Islander Club', 'islander-club'],
   '6355a51e-38e0-4aba-9c7c-abfc64f0b732': ['Islands West', 'islands-west'],
   '675707ed-eaab-4c93-921d-9a4386b5bddf': ['Jewfish Key', 'jewfish-key'],
-  'd7953eac-c9fa-4931-9f3b-1f17ea5c852f': ["L'Ambiance", 'ambiance-bay-isles'],
+  'd7953eac-c9fa-4931-9f3b-1f17ea5c852f': ["L'Ambiance", 'ambiance'],
   'ba4f760e-91cf-49e0-9559-56ff1697c9c1': ['La Firenza', 'la-firenza'],
   '79d9402b-58da-4c29-acf1-ea5fd6062ca6': ['La Playa', 'la-playa'],
   '9ca880b3-9aac-47e1-955e-24e49b9f0811': ['Laguna Yacht Village', 'laguna-yacht-village'],
