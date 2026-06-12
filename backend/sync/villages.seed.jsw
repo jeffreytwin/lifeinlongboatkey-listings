@@ -343,7 +343,7 @@ export const VILLAGE_SEED = [
     "matchPattern": "ambiance",
     "villageName": "L'Ambiance",
     "villageSortHelp": "L'Ambiance",
-    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/ambiance-bay-isles",
+    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/ambiance",
     "village1": "d7953eac-c9fa-4931-9f3b-1f17ea5c852f",
     "order": 43
   },

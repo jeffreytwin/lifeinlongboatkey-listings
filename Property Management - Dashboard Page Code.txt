@@ -555,7 +555,7 @@ $w.onReady(async function () {
         if (isLAmbiance !== -1) {
           valData['Village'] = "L'Ambiance";
           valData['villageSortHelp'] = "L'Ambiance";
-          valData['VillageURL'] = `${baseURL}/neighborhood/ambiance-bay-isles`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/ambiance`;
           valData['village1'] = "d7953eac-c9fa-4931-9f3b-1f17ea5c852f";
         }
         if (isLaFirenza !== -1) {
