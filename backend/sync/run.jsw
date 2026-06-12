@@ -297,6 +297,77 @@ export async function testProcessMediaStep() {
 // Intended use: after deleting a Villages row or changing matchPatterns, call
 // this once with the affected name. Safe to re-run; rows already reassigned
 // are no longer found by the eq('village') filter.
+// One-shot sweep after correcting the Villages data wholesale (e.g. the June
+// 2026 official-URL cleanup): re-runs the village matcher against every
+// HousesforSale row and rewrites the village fields from the current Villages
+// data via bulkUpdate. Rows whose subdivision no longer matches any village
+// are removed (and their media trashed), mirroring sync behavior - their
+// summary is returned so removals are reviewable. Safe to re-run; respects
+// the invocation budget and reports `remaining` if it ran out of time.
+export async function reclassifyAllHousesforSale() {
+    const deadline = Date.now() + TEST_PANEL_DEADLINE_MS;
+    invalidateVillageCache();
+
+    let processed = 0;
+    let updated = 0;
+    let removed = 0;
+    let unmatchedSummary = [];
+    let skip = 0;
+    const PAGE = 100;
+    let remaining = false;
+
+    while (true) {
+        if (Date.now() > deadline) { remaining = true; break; }
+        const res = await wixData.query(COLLECTION).limit(PAGE).skip(skip).find({ suppressAuth: true });
+        if (!res.items.length) break;
+
+        const updates = [];
+        for (const row of res.items) {
+            processed += 1;
+            const village = await matchVillage(row.subdivision);
+            if (!village) {
+                const wixSrcs = Array.isArray(row.listingImageGallery)
+                    ? row.listingImageGallery.filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http')).map(g => g.src)
+                    : [];
+                try {
+                    await wixData.remove(COLLECTION, row._id, { suppressAuth: true });
+                    removed += 1;
+                    unmatchedSummary.push({ id: row._id, subdivision: row.subdivision, was: row.village });
+                } catch (err) {
+                    console.log('reclassifyAll remove failed for', row._id, err && err.message);
+                }
+                if (wixSrcs.length) await trashMedia(wixSrcs);
+                continue;
+            }
+            updates.push({
+                ...row,
+                village: village.villageName,
+                village1: village.village1,
+                villageLink: village.villageURL,
+                villageSortHelp: village.villageSortHelp,
+                blueTag1: village.blueTag1 || '',
+                purpleTag1: village.purpleTag1 || '',
+                greenTag1: village.greenTag1 || ''
+            });
+        }
+
+        if (updates.length) {
+            try {
+                const bulk = await wixData.bulkUpdate(COLLECTION, updates, { suppressAuth: true });
+                updated += (bulk && bulk.updated) != null ? bulk.updated : updates.length;
+            } catch (err) {
+                console.log('reclassifyAll bulkUpdate failed at skip', skip, err && err.message);
+            }
+        }
+
+        if (res.items.length < PAGE) break;
+        // Removed rows shift pagination back; only advance past rows we kept.
+        skip += updates.length;
+    }
+
+    return { processed, updated, removed, remaining, unmatchedSummary };
+}
+
 export async function reclassifyHousesforSaleByVillage(villageName) {
     const COLLECTION = 'HousesforSale';
     invalidateVillageCache();

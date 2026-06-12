@@ -5,7 +5,7 @@ import { runSync } from 'backend/sync/pipeline';
 import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
 import { processOneStaggingRow } from 'backend/sync/stagging';
 import { seedVillages } from 'backend/sync/seed';
-import { reclassifyHousesforSaleByVillage, refreshListings } from 'backend/sync/run';
+import { reclassifyHousesforSaleByVillage, reclassifyAllHousesforSale, refreshListings } from 'backend/sync/run';
 
 const CHAIN_DEADLINE_MS = 50 * 1000;
 
@@ -99,6 +99,19 @@ export async function post_refreshListings(request) {
             return badRequest({ body: 'ids array required' });
         }
         const result = await refreshListings(body.ids);
+        return jsonResponse(200, result);
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Full-collection variant of reclassify: rewrites the village fields on every
+// HousesforSale row from the current Villages data. Use after bulk Villages
+// corrections (names/URLs). Re-run if the response reports remaining: true.
+export async function post_reclassifyAll(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const result = await reclassifyAllHousesforSale();
         return jsonResponse(200, result);
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });
