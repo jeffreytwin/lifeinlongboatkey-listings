@@ -71,15 +71,17 @@ async function prefillContactForm() {
         const member = await currentMember.getMember({ fieldsets: ['FULL'] });
         if (!member) return; // not logged in
 
-        const contact = member.contactDetails || {};
-        const phone = Array.isArray(contact.phones) && contact.phones.length
-            ? contact.phones[0]
-            : null;
+        const contact = member.contactDetails;
+        const firstName = contact && contact.firstName ? contact.firstName : null;
+        const lastName = contact && contact.lastName ? contact.lastName : null;
+        const phones = contact && contact.phones ? contact.phones : null;
+        const phone = phones && phones.length ? phones[0] : null;
+        const email = member.loginEmail ? member.loginEmail : null;
 
-        setIfEmpty('#input10', contact.firstName);   // First Name
-        setIfEmpty('#input11', contact.lastName);    // Last Name
-        setIfEmpty('#input12', member.loginEmail);   // Email
-        setIfEmpty('#input13', phone);               // Phone
+        setIfEmpty('#input10', firstName);   // First Name
+        setIfEmpty('#input11', lastName);    // Last Name
+        setIfEmpty('#input12', email);       // Email
+        setIfEmpty('#input13', phone);       // Phone
     } catch (err) {
         console.error("Contact form prefill failed:", err);
     }
