@@ -388,7 +388,7 @@ $w.onReady(async function () {
           valData['Village'] = "Buttonwood Harbor";
           valData['villageSortHelp'] = "Buttonwood Harbor";
           valData['VillageURL'] = `${baseURL}/neighborhood/buttonwood-harbor`;
-          valData['village1'] = "5af688a2-4d5f-407b-b281-797539007674";
+          valData['village1'] = "3e003132-d274-4287-bd08-5af1b0f53832";
         }
         if (isCabanaBeachClub !== -1) {
           valData['Village'] = "Cabana Beach Club";

@@ -26,7 +26,7 @@ const OFFICIAL = {
   '8554d0f6-66fa-4436-a922-4304d4275892': ['Beachcomber', 'beachcomber'],
   '26d9bd72-ba70-4c3d-8820-950e40d886b4': ['Beachplace', 'beachplace'],
   '76bc1da1-8297-4b35-b0cd-e9cca76a0125': ['Buttonwood Cove', 'buttonwood-cove'],
-  '5af688a2-4d5f-407b-b281-797539007674': ['Buttonwood Harbor', 'buttonwood-harbor'],
+  '3e003132-d274-4287-bd08-5af1b0f53832': ['Buttonwood Harbor', 'buttonwood-harbor'],
   '8bf0b60c-6254-4748-9964-c77fb3a8e97a': ['Cabana Beach Club', 'cabana-beach-club'],
   '47fe9346-8cb0-41b3-8cca-762936d955c7': ['Casa Del Mar', 'casa-del-mar'],
   'e80bb050-3770-4ecd-8509-f347afbccd5a': ['Castillian', 'castillian'],
