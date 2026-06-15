@@ -6,6 +6,7 @@ import { processMediaQueueStep, triggerMediaDrain } from 'backend/sync/media';
 import { processOneStaggingRow } from 'backend/sync/stagging';
 import { seedVillages } from 'backend/sync/seed';
 import { reclassifyHousesforSaleByVillage, reclassifyAllHousesforSale, refreshListings } from 'backend/sync/run';
+import { refreshVillageActiveRanges } from 'backend/sync/village-stats';
 
 const CHAIN_DEADLINE_MS = 50 * 1000;
 
@@ -99,6 +100,19 @@ export async function post_refreshListings(request) {
             return badRequest({ body: 'ids array required' });
         }
         const result = await refreshListings(body.ids);
+        return jsonResponse(200, result);
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Recompute per-neighborhood active range stats (price/sqft/bedrooms) on
+// HousesforSale-DynamicPages. The hourly sync also does this; this is for
+// on-demand runs. Re-run if the response reports remaining: true.
+export async function post_refreshVillageRanges(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const result = await refreshVillageActiveRanges(Date.now() + CHAIN_DEADLINE_MS);
         return jsonResponse(200, result);
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });

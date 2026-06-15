@@ -1,0 +1,160 @@
+import wixData from 'wix-data';
+
+// Per-neighborhood range stats for the HousesforSale-DynamicPages collection.
+//
+// Each HousesforSale listing carries a `village1` UUID that is the `_id` of its
+// neighborhood row in HousesforSale-DynamicPages. We bucket the current active
+// listings by that id and write min/max display ranges back onto the
+// neighborhood row:
+//   priceRangeActive    e.g. "$500s - $1M"   (from listingPricePure)
+//   squareFeetActive    e.g. "1,200 - 4,100" (from squareFeet)
+//   bedroomRangeActive  e.g. "2 - 4"         (from bedrooms)
+//
+// Formatting rules (active = current listings only):
+//   Price - round to a display band: nearest $100k below $1M shown as "$Xs"
+//           (e.g. $540k -> "$500s"), nearest $1M at/above shown as "$XM".
+//   Sqft  - round to nearest 100, comma-grouped.
+//   Beds  - integer min/max, no rounding.
+//   All three collapse to a single token when min and max round equal
+//   ("4", "$1M", "2,000"), and are null when the neighborhood has no usable
+//   active data for that metric.
+
+const HOUSES = 'HousesforSale';
+const NEIGHBORHOODS = 'HousesforSale-DynamicPages';
+const WRITE_CHUNK = 50;
+
+function commafy(n) {
+    return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+// Round a price to its display band and render the token. nearest $100k below
+// $1M ("$500s"); nearest $1M at/above ("$2M"). Sub-million values that round
+// up to $1M render as "$1M".
+export function priceToken(value) {
+    if (typeof value !== 'number' || !isFinite(value) || value <= 0) return null;
+    const band = value < 1000000
+        ? Math.round(value / 100000) * 100000
+        : Math.round(value / 1000000) * 1000000;
+    if (band >= 1000000) return `$${band / 1000000}M`;
+    return `$${band / 1000}s`;
+}
+
+export function formatPriceRange(min, max) {
+    const lo = priceToken(min);
+    const hi = priceToken(max);
+    if (!lo || !hi) return null;
+    return lo === hi ? lo : `${lo} - ${hi}`;
+}
+
+export function formatSqftRange(min, max) {
+    if (!isFinite(min) || !isFinite(max)) return null;
+    const lo = Math.round(min / 100) * 100;
+    const hi = Math.round(max / 100) * 100;
+    return lo === hi ? commafy(lo) : `${commafy(lo)} - ${commafy(hi)}`;
+}
+
+export function formatBedroomRange(min, max) {
+    if (!isFinite(min) || !isFinite(max)) return null;
+    return min === max ? String(min) : `${min} - ${max}`;
+}
+
+// squareFeet is stored on HousesforSale as a comma-grouped string ("1,234"),
+// and "0" for listings without a living area (e.g. vacant land). Parse back to
+// a positive number, or null to exclude from the range.
+function parseSqft(value) {
+    if (value == null) return null;
+    const n = parseInt(String(value).replace(/,/g, ''), 10);
+    return isFinite(n) && n > 0 ? n : null;
+}
+
+function extend(agg, key, value) {
+    const lo = `${key}Min`;
+    const hi = `${key}Max`;
+    agg[lo] = agg[lo] == null ? value : Math.min(agg[lo], value);
+    agg[hi] = agg[hi] == null ? value : Math.max(agg[hi], value);
+}
+
+// Bucket every active HousesforSale listing by its village1 id, tracking the
+// min/max of price, square feet, and bedrooms.
+async function aggregateActiveByVillage() {
+    const map = new Map();
+    let skip = 0;
+    while (true) {
+        const res = await wixData.query(HOUSES)
+            .fields('listingPricePure', 'squareFeet', 'bedrooms', 'village1')
+            .limit(1000).skip(skip)
+            .find({ suppressAuth: true });
+
+        for (const row of res.items) {
+            const key = row.village1;
+            if (!key || typeof key !== 'string') continue;
+            let agg = map.get(key);
+            if (!agg) { agg = {}; map.set(key, agg); }
+
+            const price = row.listingPricePure;
+            if (typeof price === 'number' && isFinite(price) && price > 0) {
+                extend(agg, 'price', price);
+            }
+            const sqft = parseSqft(row.squareFeet);
+            if (sqft != null) {
+                extend(agg, 'sqft', sqft);
+            }
+            const beds = row.bedrooms;
+            if (typeof beds === 'number' && isFinite(beds) && beds > 0) {
+                extend(agg, 'bed', beds);
+            }
+        }
+
+        if (res.items.length < 1000) break;
+        skip += res.items.length;
+    }
+    return map;
+}
+
+// Treat undefined / null / "" the same when diffing against computed ranges so
+// a neighborhood that has (and had) no data isn't rewritten every run.
+function norm(v) {
+    return (v == null || v === '') ? null : v;
+}
+
+// Recompute the three *Active range fields on every neighborhood row from the
+// current active listings. Neighborhoods with no active listings have those
+// fields cleared. Respects an optional deadline (ms epoch); if it runs out of
+// budget mid-write it returns remaining: true so the caller can re-invoke.
+export async function refreshVillageActiveRanges(deadline) {
+    const map = await aggregateActiveByVillage();
+
+    // The neighborhoods collection is small (~100 rows); load it in one query.
+    const res = await wixData.query(NEIGHBORHOODS).limit(1000).find({ suppressAuth: true });
+    const rows = res.items;
+
+    const updates = [];
+    for (const row of rows) {
+        const agg = map.get(row._id) || {};
+        const priceRangeActive = formatPriceRange(agg.priceMin, agg.priceMax);
+        const squareFeetActive = formatSqftRange(agg.sqftMin, agg.sqftMax);
+        const bedroomRangeActive = formatBedroomRange(agg.bedMin, agg.bedMax);
+
+        if (norm(row.priceRangeActive) !== priceRangeActive ||
+            norm(row.squareFeetActive) !== squareFeetActive ||
+            norm(row.bedroomRangeActive) !== bedroomRangeActive) {
+            updates.push({ ...row, priceRangeActive, squareFeetActive, bedroomRangeActive });
+        }
+    }
+
+    let written = 0;
+    for (let i = 0; i < updates.length; i += WRITE_CHUNK) {
+        if (deadline && Date.now() > deadline) {
+            return { villages: rows.length, changed: updates.length, written, remaining: true };
+        }
+        const chunk = updates.slice(i, i + WRITE_CHUNK);
+        try {
+            const bulk = await wixData.bulkUpdate(NEIGHBORHOODS, chunk, { suppressAuth: true });
+            written += (bulk && bulk.updated) != null ? bulk.updated : chunk.length;
+        } catch (err) {
+            console.log('refreshVillageActiveRanges bulkUpdate failed at', i, err && err.message);
+        }
+    }
+
+    return { villages: rows.length, changed: updates.length, written, remaining: false };
+}

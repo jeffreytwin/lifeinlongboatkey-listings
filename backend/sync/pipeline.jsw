@@ -4,6 +4,7 @@ import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { planIncremental, planFull } from 'backend/sync/diff';
 import { processMediaQueueStep, trashMedia, triggerMediaDrain } from 'backend/sync/media';
 import { drainStaggingFanOut } from 'backend/sync/stagging';
+import { refreshVillageActiveRanges } from 'backend/sync/village-stats';
 
 const COLLECTION = 'HousesforSale';
 const STAGGING = 'Stagging';
@@ -584,6 +585,18 @@ export async function runSync(mode) {
         let datesRefreshed = 0;
         if (Date.now() < deadline) {
             datesRefreshed = await refreshAllDateOfMlsPull(deadline);
+        }
+
+        // Refresh per-neighborhood active range stats (price/sqft/bedrooms) on
+        // HousesforSale-DynamicPages. Wrapped so a stats failure never breaks
+        // the core listing sync.
+        if (Date.now() < deadline) {
+            try {
+                const vr = await refreshVillageActiveRanges(deadline);
+                console.log('village active ranges:', JSON.stringify(vr));
+            } catch (err) {
+                console.log('refreshVillageActiveRanges failed', err && err.message);
+            }
         }
 
         const counts = {
