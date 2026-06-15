@@ -11,11 +11,13 @@ import wixData from 'wix-data';
 //   bedroomRangeActive  e.g. "2 - 4"         (from bedrooms)
 //
 // Formatting rules (active = current listings only):
-//   Price - round to a display band: nearest $100k below $1M shown as "$Xs"
-//           (e.g. $540k -> "$500s"), nearest $1M at/above shown as "$XM".
-//   Sqft  - round to nearest 100, comma-grouped.
+//   Price - banded to a display token. The low end floors (never rounds up) -
+//           nearest $100k *down* below $1M, nearest $1M *down* at/above; the
+//           high end rounds to nearest. $540k -> "$500s", $2M -> "$2M".
+//   Sqft  - low end floors to the $100 below, high end rounds to nearest 100,
+//           comma-grouped.
 //   Beds  - integer min/max, no rounding.
-//   All three collapse to a single token when min and max round equal
+//   All three collapse to a single token when low and high land equal
 //   ("4", "$1M", "2,000"), and are null when the neighborhood has no usable
 //   active data for that metric.
 
@@ -27,28 +29,30 @@ function commafy(n) {
     return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-// Round a price to its display band and render the token. nearest $100k below
-// $1M ("$500s"); nearest $1M at/above ("$2M"). Sub-million values that round
-// up to $1M render as "$1M".
-export function priceToken(value) {
+// Band a price and render the token. nearest $100k below $1M ("$500s");
+// nearest $1M at/above ("$2M"). mode 'floor' rounds down (for the low end of a
+// range, so it never overstates the starting price); mode 'round' (default)
+// rounds to nearest. Values that resolve to $1M render as "$1M".
+export function priceToken(value, mode = 'round') {
     if (typeof value !== 'number' || !isFinite(value) || value <= 0) return null;
+    const snap = mode === 'floor' ? Math.floor : Math.round;
     const band = value < 1000000
-        ? Math.round(value / 100000) * 100000
-        : Math.round(value / 1000000) * 1000000;
+        ? snap(value / 100000) * 100000
+        : snap(value / 1000000) * 1000000;
     if (band >= 1000000) return `$${band / 1000000}M`;
     return `$${band / 1000}s`;
 }
 
 export function formatPriceRange(min, max) {
-    const lo = priceToken(min);
-    const hi = priceToken(max);
+    const lo = priceToken(min, 'floor');
+    const hi = priceToken(max, 'round');
     if (!lo || !hi) return null;
     return lo === hi ? lo : `${lo} - ${hi}`;
 }
 
 export function formatSqftRange(min, max) {
     if (!isFinite(min) || !isFinite(max)) return null;
-    const lo = Math.round(min / 100) * 100;
+    const lo = Math.floor(min / 100) * 100;
     const hi = Math.round(max / 100) * 100;
     return lo === hi ? commafy(lo) : `${commafy(lo)} - ${commafy(hi)}`;
 }
