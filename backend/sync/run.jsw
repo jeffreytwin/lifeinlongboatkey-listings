@@ -4,6 +4,7 @@ import { hydrateListing, debugHydrate, peekFeed } from 'backend/sync/mlsgrid';
 import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
 import { processMediaQueueStep, triggerMediaDrain, trashMedia } from 'backend/sync/media';
 import { drainStaggingFanOut, countPendingStagging, processOneStaggingRow } from 'backend/sync/stagging';
+import { refreshVillageActiveRanges } from 'backend/sync/village-stats';
 import { BOOTSTRAP_IDS } from 'backend/sync/bootstrap-ids';
 
 const COLLECTION = 'HousesforSale';
@@ -190,6 +191,14 @@ export async function runBootstrap() {
 // rows were promoted by external paths (the old dashboard).
 export async function runBackfillPublished() {
     return backfillPublishedFlag();
+}
+
+// Manual trigger for the per-neighborhood active range stats. The hourly sync
+// runs this automatically; use this to recompute on demand (e.g. right after
+// adding the *Active fields to HousesforSale-DynamicPages).
+export async function refreshVillageRanges() {
+    const deadline = Date.now() + TEST_PANEL_DEADLINE_MS;
+    return refreshVillageActiveRanges(deadline);
 }
 
 // Recovery for Stagging rows that landed with an empty gallery (typically
