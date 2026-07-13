@@ -114,6 +114,7 @@ $w.onReady(async function () {
       let isIslandsWest = subDivisionName.search("islands west");
       let isLAmbiance = subDivisionName.search("ambiance");
       let isJewfishKey = subDivisionName.search("jewfish");
+      let isJewFishKeySpaced = subDivisionName.search("jew fish");
       let isLaFirenza = subDivisionName.search("la firenza");
       let isLaPlaya = subDivisionName.search("la playa");
       let isLagunaYachtVillage = subDivisionName.search("laguna yacht village");
@@ -230,6 +231,7 @@ $w.onReady(async function () {
           isIslanderClub !== -1 ||
           isIslandsWest !== -1 ||
           isJewfishKey !== -1 ||
+          isJewFishKeySpaced !== -1 ||
           isLAmbiance !== -1 ||
           isLaFirenza !== -1 ||
           isLaPlaya !== -1 ||
@@ -547,6 +549,12 @@ $w.onReady(async function () {
           valData['village1'] = "6355a51e-38e0-4aba-9c7c-abfc64f0b732";
         }
         if (isJewfishKey !== -1) {
+          valData['Village'] = "Jewfish Key";
+          valData['villageSortHelp'] = "Jewfish Key";
+          valData['VillageURL'] = `${baseURL}/neighborhood/jewfish-key`;
+          valData['village1'] = "675707ed-eaab-4c93-921d-9a4386b5bddf";
+        }
+        if (isJewFishKeySpaced !== -1) {
           valData['Village'] = "Jewfish Key";
           valData['villageSortHelp'] = "Jewfish Key";
           valData['VillageURL'] = `${baseURL}/neighborhood/jewfish-key`;
