@@ -40,6 +40,10 @@ function hasMeaningfulChange(existing, incoming) {
     if (!existing) return true;
     if (existing.listingPricePure !== incoming.listingPricePure) return true;
     if (existing.standardStatus !== incoming.standardStatus) return true;
+    // Address format changes (e.g. adding unit numbers) must propagate even
+    // when price/status/timestamp are unchanged, since propertyAddress is the
+    // dynamic page URL key and must be unique.
+    if (existing.propertyAddress !== incoming.propertyAddress) return true;
     const a = existing.modificationTimestamp ? new Date(existing.modificationTimestamp).getTime() : 0;
     const b = incoming.modificationTimestamp ? new Date(incoming.modificationTimestamp).getTime() : 0;
     return b > a;

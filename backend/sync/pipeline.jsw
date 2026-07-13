@@ -55,11 +55,15 @@ function formatSquareFeet(v) {
 
 function buildAddress(data) {
     const street = [data.StreetNumber, titleCase(data.StreetName), titleCase(data.StreetSuffix)].filter(Boolean).join(' ');
-    const propertyAdd = `${street}, ${titleCase(data.City)}, ${data.StateOrProvince} ${data.PostalCode}`;
+    // Include the unit number: propertyAddress drives the dynamic page URL,
+    // which must be unique. Without it, two active units in the same condo
+    // building collide on the same URL.
+    const unit = data.UnitNumber ? ` Unit ${data.UnitNumber}` : '';
+    const propertyAdd = `${street}${unit}, ${titleCase(data.City)}, ${data.StateOrProvince} ${data.PostalCode}`;
     const addressObject = {
         city: data.City,
         location: { latitude: data.Latitude, longitude: data.Longitude },
-        streetAddress: { number: data.StreetNumber, name: titleCase(data.StreetName) },
+        streetAddress: { number: data.StreetNumber, name: titleCase(data.StreetName), apt: data.UnitNumber || '' },
         country: data.Country,
         postalCode: data.PostalCode,
         formatted: `${propertyAdd}, ${data.Country}`,
