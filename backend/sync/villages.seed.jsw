@@ -882,5 +882,14 @@ export const VILLAGE_SEED = [
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/windward-bay",
     "village1": "9d1cf7a0-0694-42bd-9fd6-cce8c77ddd5c",
     "order": 110
+  },
+  {
+    "matchPattern": "bay isles",
+    "streetPattern": "bayou",
+    "villageName": "The Bayou (Bay Isles)",
+    "villageSortHelp": "The Bayou (Bay Isles)",
+    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-bayou-bay-isles",
+    "village1": "98eb305d-0b83-496c-8b87-d5982cef505c",
+    "order": 111
   }
 ];

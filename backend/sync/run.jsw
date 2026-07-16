@@ -61,7 +61,7 @@ export async function testHydrateAndInsertOne(listingId) {
     const raw = await hydrateListing(id);
     if (!raw) return { error: 'not found', listingId: id };
 
-    const village = await matchVillage(raw.SubdivisionName);
+    const village = await matchVillage(raw.SubdivisionName, `${raw.StreetName || ''} ${raw.StreetSuffix || ''}`);
     if (!village) return { error: 'no village match', listingId: id, subdivision: raw.SubdivisionName };
 
     // transformListing and mergeGallery are exported from pipeline.jsw. Wix
@@ -141,7 +141,7 @@ export async function refreshListings(ids) {
         }
         const storedId = raw.ListingId;
 
-        const village = await matchVillage(raw.SubdivisionName);
+        const village = await matchVillage(raw.SubdivisionName, `${raw.StreetName || ''} ${raw.StreetSuffix || ''}`);
         if (!village) {
             staged.push({ id: storedId, error: 'no village match', subdivision: raw.SubdivisionName });
             continue;
@@ -231,7 +231,7 @@ export async function reviveStrandedStagging() {
             results.push({ id: row._id, error: 'not found in MLSGrid' });
             continue;
         }
-        const village = await matchVillage(raw.SubdivisionName);
+        const village = await matchVillage(raw.SubdivisionName, `${raw.StreetName || ''} ${raw.StreetSuffix || ''}`);
         if (!village) {
             results.push({ id: row._id, error: 'no village match', subdivision: raw.SubdivisionName });
             continue;
@@ -333,7 +333,7 @@ export async function reclassifyAllHousesforSale() {
         const updates = [];
         for (const row of res.items) {
             processed += 1;
-            const village = await matchVillage(row.subdivision);
+            const village = await matchVillage(row.subdivision, row.propertyAddress);
             if (!village) {
                 const wixSrcs = Array.isArray(row.listingImageGallery)
                     ? row.listingImageGallery.filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http')).map(g => g.src)
@@ -398,7 +398,7 @@ export async function reclassifyHousesforSaleByVillage(villageName) {
     const removedSummary = [];
 
     for (const row of rows) {
-        const newVillage = await matchVillage(row.subdivision);
+        const newVillage = await matchVillage(row.subdivision, row.propertyAddress);
         if (newVillage && newVillage.villageName === villageName) {
             // Same village, but refresh the dependent fields - the Villages
             // row's URL/id/tags may have changed even when the name didn't.

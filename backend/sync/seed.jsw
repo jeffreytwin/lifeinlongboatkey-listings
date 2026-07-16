@@ -2,18 +2,25 @@ import wixData from 'wix-data';
 import { VILLAGE_SEED } from 'backend/sync/villages.seed';
 import { invalidateVillageCache } from 'backend/sync/villages';
 
+// Composite upsert key: matchPattern alone is no longer unique because
+// street-qualified rows (e.g. 'bay isles' + streetPattern 'bayou') share a
+// subdivision pattern with their generic sibling.
+function seedKey(entry) {
+    return `${entry.matchPattern || ''}||${entry.streetPattern || ''}`;
+}
+
 // Populates the `Villages` reference collection from the generated seed.
-// Idempotent: uses matchPattern as the stable key and bulk-saves in chunks so
-// the call completes well inside Wix's request budget.
+// Idempotent: uses matchPattern+streetPattern as the stable key and bulk-saves
+// in chunks so the call completes well inside Wix's request budget.
 export async function seedVillages() {
     const existing = await wixData.query('Villages').limit(1000).find({ suppressAuth: true });
     const byPattern = new Map();
     for (const item of existing.items) {
-        if (item.matchPattern) byPattern.set(item.matchPattern, item);
+        if (item.matchPattern) byPattern.set(seedKey(item), item);
     }
 
     const toSave = VILLAGE_SEED.map(entry => {
-        const current = byPattern.get(entry.matchPattern);
+        const current = byPattern.get(seedKey(entry));
         return current ? { ...current, ...entry } : { ...entry };
     });
 
@@ -38,10 +45,10 @@ export async function seedVillages() {
 // seedVillages to bring the collection exactly in line with the seed. Returns
 // the deleted rows' key fields for review.
 export async function pruneVillages() {
-    const seedPatterns = new Set(VILLAGE_SEED.map(e => e.matchPattern));
+    const seedPatterns = new Set(VILLAGE_SEED.map(e => seedKey(e)));
     const existing = await wixData.query('Villages').limit(1000).find({ suppressAuth: true });
 
-    const strays = existing.items.filter(item => !seedPatterns.has(item.matchPattern));
+    const strays = existing.items.filter(item => !seedPatterns.has(seedKey(item)));
     const deleted = [];
     for (const row of strays) {
         try {
