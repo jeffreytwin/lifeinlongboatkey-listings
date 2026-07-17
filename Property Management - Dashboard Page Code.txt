@@ -345,8 +345,8 @@ $w.onReady(async function () {
           valData['village1'] = "31f92f08-0123-4d45-adf2-e84aed003790";
         }
         if (isBayportBeachTennis !== -1) {
-          valData['Village'] = "Bayport Beach & Tennis";
-          valData['villageSortHelp'] = "Bayport Beach & Tennis";
+          valData['Village'] = "Bayport Beach & Tennis Club";
+          valData['villageSortHelp'] = "Bayport Beach & Tennis Club";
           valData['VillageURL'] = `${baseURL}/neighborhood/bayport-beach-and-tennis`;
           valData['village1'] = "fa3c3321-c938-4f6c-b778-278a5c2444fc";
         }
