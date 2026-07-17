@@ -369,8 +369,8 @@ $w.onReady(async function () {
           valData['village1'] = "3ccb68d1-2269-4a6d-b4ac-5175a8f82fc1";
         }
         if (isBeachcomber !== -1) {
-          valData['Village'] = "Beachcomber";
-          valData['villageSortHelp'] = "Beachcomber";
+          valData['Village'] = "The Beachcomber";
+          valData['villageSortHelp'] = "The Beachcomber";
           valData['VillageURL'] = `${baseURL}/neighborhood/beachcomber`;
           valData['village1'] = "8554d0f6-66fa-4436-a922-4304d4275892";
         }

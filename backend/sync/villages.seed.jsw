@@ -93,8 +93,8 @@ export const VILLAGE_SEED = [
   },
   {
     "matchPattern": "beachcomber",
-    "villageName": "Beachcomber",
-    "villageSortHelp": "Beachcomber",
+    "villageName": "The Beachcomber",
+    "villageSortHelp": "The Beachcomber",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/beachcomber",
     "village1": "8554d0f6-66fa-4436-a922-4304d4275892",
     "order": 12
