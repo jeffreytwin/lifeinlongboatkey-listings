@@ -63,7 +63,7 @@ export const VILLAGE_SEED = [
     "matchPattern": "bayport",
     "villageName": "Bayport Beach & Tennis Club",
     "villageSortHelp": "Bayport Beach & Tennis Club",
-    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/bayport-beach-and-tennis",
+    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/bayport-beach-and-tennis-club",
     "village1": "fa3c3321-c938-4f6c-b778-278a5c2444fc",
     "order": 8
   },
