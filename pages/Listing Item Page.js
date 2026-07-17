@@ -11,9 +11,43 @@ import { memory } from 'wix-storage';
 import wixData from 'wix-data';
 import { currentMember } from 'wix-members-frontend';
 
+// --- Vacant land display -----------------------------------------------
+// Land listings have no bed/bath/living-area, so the stat strip shows
+// blanks and zeros. For homeType 'Land' we collapse those elements and,
+// if a lot-size text element exists, show the lotSize field instead
+// (e.g. '1.24-acre lot').
+//
+// REPLACE the placeholder IDs below with the real ones from the editor:
+// click the element on the page and read its ID from the top of the
+// Properties & Events panel. Add or remove entries as needed - if the
+// bd/ba/sqft stats live inside one group, its single group ID is enough.
+const LAND_HIDE_IDS = ['#REPLACE_bedsText', '#REPLACE_bathsText', '#REPLACE_sqftText'];
+// Optional: a text element to display the lot size on land listings.
+// Leave as-is (or '') if you don't add one.
+const LAND_LOT_SIZE_ID = '#REPLACE_lotSizeText';
+
+function collapseIfPresent(id) {
+    try {
+        const el = $w(id);
+        if (el && el.collapse) { el.hide(); el.collapse(); }
+    } catch (err) { /* element not on this page - placeholder not yet replaced */ }
+}
+
+function setTextIfPresent(id, text) {
+    try {
+        const el = $w(id);
+        if (el && 'text' in el) { el.text = text; el.expand && el.expand(); }
+    } catch (err) { /* element not on this page - optional */ }
+}
+
 $w.onReady(function () {
     $w("#dynamicDataset").onReady(() => {
         let currentItem = $w('#dynamicDataset').getCurrentItem();
+
+        if (currentItem.homeType === 'Land') {
+            for (const id of LAND_HIDE_IDS) collapseIfPresent(id);
+            if (currentItem.lotSize) setTextIfPresent(LAND_LOT_SIZE_ID, currentItem.lotSize);
+        }
 
         // If village1 is already joined (an object), check it directly.
         if (currentItem.village1 && typeof currentItem.village1 === 'object') {

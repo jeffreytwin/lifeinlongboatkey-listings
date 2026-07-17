@@ -53,6 +53,21 @@ function formatSquareFeet(v) {
     return v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+// Display string for lot size, preferring acres for larger parcels. Used by
+// the listing page as the headline stat on vacant-land listings, where
+// bed/bath/living-area are meaningless.
+function formatLotSize(data) {
+    const acres = typeof data.LotSizeAcres === 'number' ? data.LotSizeAcres : null;
+    const sqft = typeof data.LotSizeSquareFeet === 'number' ? data.LotSizeSquareFeet : null;
+    if (acres != null && acres >= 0.5) {
+        const n = Math.round(acres * 100) / 100;
+        return `${n}-acre lot`;
+    }
+    if (sqft != null && sqft > 0) return `${formatSquareFeet(Math.round(sqft))} sqft lot`;
+    if (acres != null && acres > 0) return `${acres}-acre lot`;
+    return '';
+}
+
 function buildAddress(data) {
     const street = [data.StreetNumber, titleCase(data.StreetName), titleCase(data.StreetSuffix)].filter(Boolean).join(' ');
     // Include the unit number: propertyAddress drives the dynamic page URL,
@@ -87,6 +102,10 @@ export function transformListing(data, village) {
     const { propertyAdd, addressObject } = buildAddress(data);
     const gallery = rawGallery(data.Media);
     const primary = gallery.length ? gallery[0].src : null;
+    // Vacant land carries no bed/bath/living-area in the feed. Store explicit
+    // zeros (uniform display instead of blanks) plus a lotSize string the
+    // listing page shows in place of the bd/ba/sqft strip.
+    const isLand = (data.PropertyType || '').toLowerCase() === 'land';
 
     return {
         _id: data.ListingId,
@@ -107,16 +126,17 @@ export function transformListing(data, village) {
         blueTag1: village ? village.blueTag1 : '',
         purpleTag1: village ? village.purpleTag1 : '',
         greenTag1: village ? village.greenTag1 : '',
-        bedrooms: data.BedroomsTotal,
+        bedrooms: data.BedroomsTotal != null ? data.BedroomsTotal : (isLand ? 0 : data.BedroomsTotal),
         listingAgentName: data.ListAgentFullName,
         listingAgentMls: data.ListAgentMlsId,
         listingAgentPhone: data.ListAgentDirectPhone,
         listingAgentCompany: data.ListOfficeName,
         listingBrokerageContactInformation: data.MFR_AttributionContact,
-        bathrooms: data.BathroomsTotalInteger,
+        bathrooms: data.BathroomsTotalInteger != null ? data.BathroomsTotalInteger : (isLand ? 0 : data.BathroomsTotalInteger),
         bathroomsSort: [Math.ceil(data.BathroomsTotalInteger || 0).toString()],
         garages: `${data.GarageSpaces == null ? 0 : data.GarageSpaces} Car`,
         squareFeet: formatSquareFeet(data.LivingArea),
+        lotSize: formatLotSize(data),
         propertyDescription: data.PublicRemarks,
         listingImageGallery: gallery,
         standardStatus: data.StandardStatus,
