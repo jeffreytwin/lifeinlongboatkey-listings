@@ -141,9 +141,9 @@ export const VILLAGE_SEED = [
   },
   {
     "matchPattern": "castillian",
-    "villageName": "Castillian",
-    "villageSortHelp": "Castillian",
-    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/castillian",
+    "villageName": "The Castillian",
+    "villageSortHelp": "The Castillian",
+    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-castillian",
     "village1": "e80bb050-3770-4ecd-8509-f347afbccd5a",
     "order": 18
   },

@@ -405,9 +405,9 @@ $w.onReady(async function () {
           valData['village1'] = "47fe9346-8cb0-41b3-8cca-762936d955c7";
         }
         if (isCastillian !== -1) {
-          valData['Village'] = "Castillian";
-          valData['villageSortHelp'] = "Castillian";
-          valData['VillageURL'] = `${baseURL}/neighborhood/castillian`;
+          valData['Village'] = "The Castillian";
+          valData['villageSortHelp'] = "The Castillian";
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-castillian`;
           valData['village1'] = "e80bb050-3770-4ecd-8509-f347afbccd5a";
         }
         if (isCedarsEast !== -1) {
