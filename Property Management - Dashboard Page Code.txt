@@ -537,9 +537,9 @@ $w.onReady(async function () {
           valData['village1'] = "2df718de-ccc3-4f0b-956d-ece986de9b6b";
         }
         if (isIslanderClub !== -1) {
-          valData['Village'] = "Islander Club";
-          valData['villageSortHelp'] = "Islander Club";
-          valData['VillageURL'] = `${baseURL}/neighborhood/islander-club`;
+          valData['Village'] = "The Islander Club";
+          valData['villageSortHelp'] = "The Islander Club";
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-islander-club`;
           valData['village1'] = "03975263-8664-41d6-a36f-83d7ebec9970";
         }
         if (isIslandsWest !== -1) {

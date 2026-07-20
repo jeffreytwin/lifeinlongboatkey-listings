@@ -317,9 +317,9 @@ export const VILLAGE_SEED = [
   },
   {
     "matchPattern": "islander club",
-    "villageName": "Islander Club",
-    "villageSortHelp": "Islander Club",
-    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/islander-club",
+    "villageName": "The Islander Club",
+    "villageSortHelp": "The Islander Club",
+    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-islander-club",
     "village1": "03975263-8664-41d6-a36f-83d7ebec9970",
     "order": 40
   },
