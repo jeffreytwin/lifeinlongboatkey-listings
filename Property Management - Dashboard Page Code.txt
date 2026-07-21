@@ -114,6 +114,7 @@ $w.onReady(async function () {
       let isIslandsWest = subDivisionName.search("islands west");
       let isLAmbiance = subDivisionName.search("ambiance");
       let isJewfishKey = subDivisionName.search("jewfish");
+      let isJewFishKeySpaced = subDivisionName.search("jew fish");
       let isLaFirenza = subDivisionName.search("la firenza");
       let isLaPlaya = subDivisionName.search("la playa");
       let isLagunaYachtVillage = subDivisionName.search("laguna yacht village");
@@ -230,6 +231,7 @@ $w.onReady(async function () {
           isIslanderClub !== -1 ||
           isIslandsWest !== -1 ||
           isJewfishKey !== -1 ||
+          isJewFishKeySpaced !== -1 ||
           isLAmbiance !== -1 ||
           isLaFirenza !== -1 ||
           isLaPlaya !== -1 ||
@@ -343,9 +345,9 @@ $w.onReady(async function () {
           valData['village1'] = "31f92f08-0123-4d45-adf2-e84aed003790";
         }
         if (isBayportBeachTennis !== -1) {
-          valData['Village'] = "Bayport Beach & Tennis";
-          valData['villageSortHelp'] = "Bayport Beach & Tennis";
-          valData['VillageURL'] = `${baseURL}/neighborhood/bayport-beach-and-tennis`;
+          valData['Village'] = "Bayport Beach & Tennis Club";
+          valData['villageSortHelp'] = "Bayport Beach & Tennis Club";
+          valData['VillageURL'] = `${baseURL}/neighborhood/bayport-beach-and-tennis-club`;
           valData['village1'] = "fa3c3321-c938-4f6c-b778-278a5c2444fc";
         }
         if (isBayviewEstates !== -1) {
@@ -367,9 +369,9 @@ $w.onReady(async function () {
           valData['village1'] = "3ccb68d1-2269-4a6d-b4ac-5175a8f82fc1";
         }
         if (isBeachcomber !== -1) {
-          valData['Village'] = "Beachcomber";
-          valData['villageSortHelp'] = "Beachcomber";
-          valData['VillageURL'] = `${baseURL}/neighborhood/beachcomber`;
+          valData['Village'] = "The Beachcomber";
+          valData['villageSortHelp'] = "The Beachcomber";
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-beachcomber`;
           valData['village1'] = "8554d0f6-66fa-4436-a922-4304d4275892";
         }
         if (isBeachplace !== -1) {
@@ -403,9 +405,9 @@ $w.onReady(async function () {
           valData['village1'] = "47fe9346-8cb0-41b3-8cca-762936d955c7";
         }
         if (isCastillian !== -1) {
-          valData['Village'] = "Castillian";
-          valData['villageSortHelp'] = "Castillian";
-          valData['VillageURL'] = `${baseURL}/neighborhood/castillian`;
+          valData['Village'] = "The Castillian";
+          valData['villageSortHelp'] = "The Castillian";
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-castillian`;
           valData['village1'] = "e80bb050-3770-4ecd-8509-f347afbccd5a";
         }
         if (isCedarsEast !== -1) {
@@ -535,9 +537,9 @@ $w.onReady(async function () {
           valData['village1'] = "2df718de-ccc3-4f0b-956d-ece986de9b6b";
         }
         if (isIslanderClub !== -1) {
-          valData['Village'] = "Islander Club";
-          valData['villageSortHelp'] = "Islander Club";
-          valData['VillageURL'] = `${baseURL}/neighborhood/islander-club`;
+          valData['Village'] = "The Islander Club";
+          valData['villageSortHelp'] = "The Islander Club";
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-islander-club`;
           valData['village1'] = "03975263-8664-41d6-a36f-83d7ebec9970";
         }
         if (isIslandsWest !== -1) {
@@ -547,6 +549,12 @@ $w.onReady(async function () {
           valData['village1'] = "6355a51e-38e0-4aba-9c7c-abfc64f0b732";
         }
         if (isJewfishKey !== -1) {
+          valData['Village'] = "Jewfish Key";
+          valData['villageSortHelp'] = "Jewfish Key";
+          valData['VillageURL'] = `${baseURL}/neighborhood/jewfish-key`;
+          valData['village1'] = "675707ed-eaab-4c93-921d-9a4386b5bddf";
+        }
+        if (isJewFishKeySpaced !== -1) {
           valData['Village'] = "Jewfish Key";
           valData['villageSortHelp'] = "Jewfish Key";
           valData['VillageURL'] = `${baseURL}/neighborhood/jewfish-key`;

@@ -8,6 +8,7 @@ async function loadVillages() {
     cache = res.items.map(v => ({
         order: typeof v.order === 'number' ? v.order : 0,
         matchPattern: (v.matchPattern || '').toLowerCase(),
+        streetPattern: (v.streetPattern || '').toLowerCase(),
         villageName: v.villageName,
         villageURL: v.villageURL,
         village1: v.village1,
@@ -23,9 +24,18 @@ export function invalidateVillageCache() {
     cache = null;
 }
 
-export async function matchVillage(subdivisionName) {
+// streetText disambiguates communities that share a generic subdivision name
+// (e.g. subdivision 'BAY ISLES' on Bayou Road/Sound is The Bayou, not the
+// Harbor Section). Sync paths pass the MLS street fields; reclassify sweeps
+// pass the stored propertyAddress. Rows without a streetPattern ignore it.
+export async function matchVillage(subdivisionName, streetText) {
     const villages = await loadVillages();
     const needle = (subdivisionName || '').toLowerCase();
     if (!needle) return null;
-    return villages.find(v => needle.includes(v.matchPattern)) || null;
+    const street = (streetText || '').toLowerCase();
+    return villages.find(v => {
+        if (!needle.includes(v.matchPattern)) return false;
+        if (v.streetPattern) return street.includes(v.streetPattern);
+        return true;
+    }) || null;
 }

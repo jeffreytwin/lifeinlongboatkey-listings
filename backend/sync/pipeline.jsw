@@ -53,13 +53,32 @@ function formatSquareFeet(v) {
     return v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+// Display string for lot size, preferring acres for larger parcels. Used by
+// the listing page as the headline stat on vacant-land listings, where
+// bed/bath/living-area are meaningless.
+function formatLotSize(data) {
+    const acres = typeof data.LotSizeAcres === 'number' ? data.LotSizeAcres : null;
+    const sqft = typeof data.LotSizeSquareFeet === 'number' ? data.LotSizeSquareFeet : null;
+    if (acres != null && acres >= 0.5) {
+        const n = Math.round(acres * 100) / 100;
+        return `${n}-acre lot`;
+    }
+    if (sqft != null && sqft > 0) return `${formatSquareFeet(Math.round(sqft))} sqft lot`;
+    if (acres != null && acres > 0) return `${acres}-acre lot`;
+    return '';
+}
+
 function buildAddress(data) {
     const street = [data.StreetNumber, titleCase(data.StreetName), titleCase(data.StreetSuffix)].filter(Boolean).join(' ');
-    const propertyAdd = `${street}, ${titleCase(data.City)}, ${data.StateOrProvince} ${data.PostalCode}`;
+    // Include the unit number: propertyAddress drives the dynamic page URL,
+    // which must be unique. Without it, two active units in the same condo
+    // building collide on the same URL.
+    const unit = data.UnitNumber ? ` Unit ${data.UnitNumber}` : '';
+    const propertyAdd = `${street}${unit}, ${titleCase(data.City)}, ${data.StateOrProvince} ${data.PostalCode}`;
     const addressObject = {
         city: data.City,
         location: { latitude: data.Latitude, longitude: data.Longitude },
-        streetAddress: { number: data.StreetNumber, name: titleCase(data.StreetName) },
+        streetAddress: { number: data.StreetNumber, name: titleCase(data.StreetName), apt: data.UnitNumber || '' },
         country: data.Country,
         postalCode: data.PostalCode,
         formatted: `${propertyAdd}, ${data.Country}`,
@@ -83,6 +102,10 @@ export function transformListing(data, village) {
     const { propertyAdd, addressObject } = buildAddress(data);
     const gallery = rawGallery(data.Media);
     const primary = gallery.length ? gallery[0].src : null;
+    // Vacant land carries no bed/bath/living-area in the feed. Store explicit
+    // zeros (uniform display instead of blanks) plus a lotSize string the
+    // listing page shows in place of the bd/ba/sqft strip.
+    const isLand = (data.PropertyType || '').toLowerCase() === 'land';
 
     return {
         _id: data.ListingId,
@@ -103,16 +126,17 @@ export function transformListing(data, village) {
         blueTag1: village ? village.blueTag1 : '',
         purpleTag1: village ? village.purpleTag1 : '',
         greenTag1: village ? village.greenTag1 : '',
-        bedrooms: data.BedroomsTotal,
+        bedrooms: data.BedroomsTotal != null ? data.BedroomsTotal : (isLand ? 0 : data.BedroomsTotal),
         listingAgentName: data.ListAgentFullName,
         listingAgentMls: data.ListAgentMlsId,
         listingAgentPhone: data.ListAgentDirectPhone,
         listingAgentCompany: data.ListOfficeName,
         listingBrokerageContactInformation: data.MFR_AttributionContact,
-        bathrooms: data.BathroomsTotalInteger,
+        bathrooms: data.BathroomsTotalInteger != null ? data.BathroomsTotalInteger : (isLand ? 0 : data.BathroomsTotalInteger),
         bathroomsSort: [Math.ceil(data.BathroomsTotalInteger || 0).toString()],
         garages: `${data.GarageSpaces == null ? 0 : data.GarageSpaces} Car`,
         squareFeet: formatSquareFeet(data.LivingArea),
+        lotSize: formatLotSize(data),
         propertyDescription: data.PublicRemarks,
         listingImageGallery: gallery,
         standardStatus: data.StandardStatus,
@@ -201,7 +225,7 @@ async function classify(mlsItems) {
         // deletes the stale row and trashes its photos. New listings with no
         // village match are filtered out naturally because they're not
         // already present.
-        const village = await matchVillage(raw.SubdivisionName);
+        const village = await matchVillage(raw.SubdivisionName, `${raw.StreetName || ''} ${raw.StreetSuffix || ''}`);
         if (!village) {
             removalIds.push(raw.ListingId);
             continue;
@@ -254,8 +278,11 @@ function findOrphanedSrcs(prevGallery, nextGallery) {
 // Three-phase write:
 //   1) Row state changes:
 //      - toInsert -> Stagging (new listings sit in Stagging until photos done)
-//      - toUpdate -> HousesforSale in place (live listings stay live)
-//      - toDelete -> HousesforSale remove + media trash
+//      - toUpdate, photos unchanged -> HousesforSale in place
+//      - toUpdate, photos changed -> HousesforSale keeps its current gallery
+//        serving (never raw MLS URLs on a live row); the new gallery stages
+//        in Stagging and swaps in at promotion, old files trashed after.
+//      - toDelete -> HousesforSale remove + media trash + Stagging cleanup
 //      All fast and always durable.
 //   2) Drain Stagging via HTTP fan-out: parallel Promise.all of fetch calls
 //      to /_functions/processStaggingRow, each with its own fresh ~59s Wix
@@ -318,14 +345,44 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
     for (const { item, prev } of toUpdate) {
         const prevGallery = prev && prev.listingImageGallery;
         const merged = mergeGallery(item.listingImageGallery, prevGallery);
-        const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
-        const isComplete = isGalleryComplete(merged);
         const wasPublished = !!(prev && prev.isPublished);
+
+        if (isGalleryComplete(merged)) {
+            // No photo changes (or the changed photos already migrated):
+            // write through and trash anything dropped from the gallery.
+            const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
+            const record = {
+                ...item,
+                listingImageGallery: merged,
+                listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
+                isPublished: true
+            };
+            try {
+                await wixData.update(COLLECTION, record, { suppressAuth: true });
+                counts.updated += 1;
+            } catch (err) {
+                console.log('update failed for', item._id, err && err.message);
+            }
+
+            const orphaned = findOrphanedSrcs(prevGallery, merged);
+            if (orphaned.length) {
+                await trashMedia(orphaned);
+                counts.imagesTrashed += orphaned.length;
+            }
+            continue;
+        }
+
+        // Photos changed (or MLSGrid returned no Media this fetch). Never put
+        // raw MLS URLs on the live row - keep the existing gallery serving
+        // (stale but working), refresh every other field, and stage the new
+        // gallery in Stagging. processOneStaggingRow uploads the new photos
+        // and swaps them in at promotion, trashing the replaced files only
+        // after the swap so the live row never references trashed media.
         const record = {
             ...item,
-            listingImageGallery: merged,
-            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
-            isPublished: isComplete || wasPublished
+            listingImageGallery: prevGallery || [],
+            listingPrimaryImage: prev ? prev.listingPrimaryImage : null,
+            isPublished: wasPublished
         };
         try {
             await wixData.update(COLLECTION, record, { suppressAuth: true });
@@ -334,10 +391,23 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
             console.log('update failed for', item._id, err && err.message);
         }
 
-        const orphaned = findOrphanedSrcs(prevGallery, merged);
-        if (orphaned.length) {
-            await trashMedia(orphaned);
-            counts.imagesTrashed += orphaned.length;
+        const existingStag = await wixData.get(STAGGING, item._id, { suppressAuth: true }).catch(() => null);
+        // Preserve upload progress from any prior staging round.
+        const stagGallery = existingStag ? mergeGallery(merged, existingStag.listingImageGallery) : merged;
+        const stagRecord = {
+            ...(existingStag || {}),
+            ...item,
+            listingImageGallery: stagGallery,
+            isPublished: false
+        };
+        try {
+            if (existingStag) {
+                await wixData.update(STAGGING, stagRecord, { suppressAuth: true });
+            } else {
+                await wixData.insert(STAGGING, stagRecord, { suppressAuth: true });
+            }
+        } catch (err) {
+            console.log('Stagging stage-for-update failed for', item._id, err && err.message);
         }
     }
 
@@ -349,6 +419,9 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
         } catch (err) {
             console.log('remove failed for', prev._id, err && err.message);
         }
+        // Also clear any Stagging twin (a new or update staging round for a
+        // listing that has since left Active) so it can't promote back later.
+        await wixData.remove(STAGGING, prev._id, { suppressAuth: true }).catch(() => null);
         if (wixSrcs.length) {
             await trashMedia(wixSrcs);
             counts.imagesTrashed += wixSrcs.length;
@@ -417,7 +490,7 @@ export async function bootstrap(ids) {
                 skippedNonResidential += 1;
                 continue;
             }
-            const village = await matchVillage(raw.SubdivisionName);
+            const village = await matchVillage(raw.SubdivisionName, `${raw.StreetName || ''} ${raw.StreetSuffix || ''}`);
             if (!village) {
                 skippedNoVillage += 1;
                 continue;

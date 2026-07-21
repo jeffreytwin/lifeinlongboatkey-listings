@@ -2,6 +2,7 @@ import wixData from 'wix-data';
 import { fetch } from 'wix-fetch';
 import { getSecret } from 'wix-secrets-backend';
 import { uploadWithRetry, trashMedia } from 'backend/sync/media';
+import { hydrateListing } from 'backend/sync/mlsgrid';
 
 const STAGGING = 'Stagging';
 const HOUSES = 'HousesforSale';
@@ -23,6 +24,42 @@ function isPending(item) {
 function isGalleryComplete(gallery) {
     if (!Array.isArray(gallery) || !gallery.length) return false;
     return gallery.every(g => g && typeof g.src === 'string' && !g.src.startsWith('http'));
+}
+
+function sameTimestamp(a, b) {
+    if (!a || !b) return false;
+    return new Date(a).getTime() === new Date(b).getTime();
+}
+
+function galleryFromMedia(media) {
+    if (!Array.isArray(media)) return [];
+    return [...media].sort((a, b) => (a.Order || 0) - (b.Order || 0)).map(m => ({
+        type: 'Image',
+        title: m.LongDescription || '',
+        src: m.MediaURL,
+        order: m.Order,
+        mlsModificationTimestamp: m.MediaModificationTimestamp || m.ModificationTimestamp || null
+    }));
+}
+
+// Local copy of pipeline's mergeGallery. Importing it from pipeline.jsw would
+// create a pipeline <-> stagging import cycle, which Wix's module cache
+// handles badly (see the inlined-transform note in pipeline.jsw).
+function mergeGalleryLocal(incoming, existing) {
+    if (!Array.isArray(incoming)) return [];
+    if (!Array.isArray(existing) || !existing.length) return incoming;
+    const byMlsUrl = new Map();
+    for (const e of existing) {
+        const key = e && (e.mlsSourceUrl || (typeof e.src === 'string' && e.src.startsWith('http') ? e.src : null));
+        if (key) byMlsUrl.set(key, e);
+    }
+    return incoming.map(inc => {
+        const prev = byMlsUrl.get(inc.src);
+        if (prev && prev.src && !prev.src.startsWith('http') && sameTimestamp(prev.mlsModificationTimestamp, inc.mlsModificationTimestamp)) {
+            return { ...inc, src: prev.src, mlsSourceUrl: inc.src };
+        }
+        return inc;
+    });
 }
 
 export async function countPendingStagging() {
@@ -92,6 +129,25 @@ export async function processOneStaggingRow(rowId) {
         }
     }
 
+    // Every pending upload failed with zero successes: the stored MLS media
+    // URLs are likely stale (MLSGrid rotates/deletes the S3 objects when an
+    // agent replaces photos, and the old links die). Re-hydrate the listing
+    // for fresh URLs so the next wave can succeed instead of hammering dead
+    // links forever.
+    if (pendingIdxs.length && processed === 0 && failed > 0) {
+        try {
+            const raw = await hydrateListing(rowId);
+            if (raw && Array.isArray(raw.Media) && raw.Media.length) {
+                const fresh = mergeGalleryLocal(galleryFromMedia(raw.Media), gallery);
+                await wixData.update(STAGGING, { ...row, listingImageGallery: fresh }, { suppressAuth: true });
+                return { rowId, status: 'rehydrated', processed, failed };
+            }
+        } catch (err) {
+            console.log('processOneStaggingRow rehydrate failed for', rowId, err && err.message);
+        }
+        return { rowId, status: 'partial', processed, failed };
+    }
+
     if (!isGalleryComplete(gallery)) {
         return { rowId, status: 'partial', processed, failed };
     }
@@ -112,6 +168,15 @@ export async function processOneStaggingRow(rowId) {
         if (existing) {
             // Carry over the system _createdDate so we don't disturb sort order.
             await wixData.update(HOUSES, { ...existing, ...houseRecord }, { suppressAuth: true });
+            // Staged photo swap: the live row kept its old gallery while the
+            // replacement uploaded. Now that the new gallery is live, trash
+            // the wix files it no longer references - after the update, so
+            // the row never points at trashed media.
+            const keep = new Set(gallery.filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http')).map(g => g.src));
+            const orphaned = (existing.listingImageGallery || [])
+                .filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http') && !keep.has(g.src))
+                .map(g => g.src);
+            if (orphaned.length) await trashMedia(orphaned);
         } else {
             await wixData.insert(HOUSES, houseRecord, { suppressAuth: true });
         }
@@ -184,8 +249,9 @@ export async function drainStaggingFanOut(deadline) {
 
         // If no progress this wave (all errored or all partial with 0 done),
         // bail out so we don't burn the rest of the budget hammering broken
-        // rows.
-        const madeProgress = results.some(r => r.status === 'promoted' || (r.processed || 0) > 0);
+        // rows. A rehydrated row counts as progress: its URLs are fresh now,
+        // so the next wave has a real chance of succeeding.
+        const madeProgress = results.some(r => r.status === 'promoted' || r.status === 'rehydrated' || (r.processed || 0) > 0);
         if (!madeProgress) break;
     }
 

@@ -62,12 +62,15 @@ function findPendingIndex(gallery) {
     return gallery.findIndex(isPendingItem);
 }
 
-async function findNextRowWithPending() {
+async function findNextRowWithPending(excludeIds) {
     const res = await wixData.query(COLLECTION)
         .descending('_createdDate')
         .limit(QUEUE_SCAN_LIMIT)
         .find({ suppressAuth: true });
-    return res.items.find(row => findPendingIndex(row.listingImageGallery) >= 0) || null;
+    return res.items.find(row =>
+        findPendingIndex(row.listingImageGallery) >= 0 &&
+        !(excludeIds && excludeIds.has(row._id))
+    ) || null;
 }
 
 async function flushGallery(target, gallery) {
@@ -101,9 +104,15 @@ export async function processMediaQueueStep(deadline) {
     let totalProcessed = 0;
     let totalFailed = 0;
     let lastListingId = null;
+    // Rows that made zero upload progress this invocation (e.g. every stored
+    // MLS URL is dead). Skip them for the rest of this run - otherwise
+    // findNextRowWithPending returns the same wedged row forever, burning the
+    // whole budget and chaining drainMedia endlessly. They get retried on the
+    // next sync invocation.
+    const stuck = new Set();
 
     while (Date.now() < effectiveDeadline) {
-        const target = await findNextRowWithPending();
+        const target = await findNextRowWithPending(stuck);
         if (!target) break;
         lastListingId = target._id;
 
@@ -113,6 +122,7 @@ export async function processMediaQueueStep(deadline) {
             if (isPendingItem(gallery[i])) pendingIdxs.push(i);
         }
 
+        let rowProcessed = 0;
         for (let b = 0; b < pendingIdxs.length && Date.now() < effectiveDeadline; b += PARALLEL_UPLOADS) {
             const batch = pendingIdxs.slice(b, b + PARALLEL_UPLOADS);
             const results = await Promise.all(batch.map(async (idx) => {
@@ -130,15 +140,20 @@ export async function processMediaQueueStep(deadline) {
                 if (r.ok) {
                     gallery[r.idx] = { ...gallery[r.idx], src: r.wixUrl, mlsSourceUrl: r.mlsUrl };
                     totalProcessed += 1;
+                    rowProcessed += 1;
                 } else {
                     totalFailed += 1;
                 }
             }
             await flushGallery(target, gallery);
         }
+        if (rowProcessed === 0) stuck.add(target._id);
     }
 
-    const moreLeft = await findNextRowWithPending();
+    // Report remaining work excluding rows that are stuck on dead URLs, so
+    // the drain chain stops instead of re-invoking itself against them
+    // forever. Stuck rows get another chance on the next sync run.
+    const moreLeft = await findNextRowWithPending(stuck);
     return {
         processed: totalProcessed,
         failed: totalFailed,
