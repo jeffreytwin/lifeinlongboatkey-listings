@@ -717,7 +717,7 @@ $w.onReady(async function () {
         if (isPromenade !== -1) {
           valData['Village'] = "Promenade";
           valData['villageSortHelp'] = "Promenade";
-          valData['VillageURL'] = `${baseURL}/neighborhood/pomenade`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/promenade`;
           valData['village1'] = "abd8f137-2e49-45f7-bef9-d42760495421";
         }
         if (isQueensHarbour !== -1) {

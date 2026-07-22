@@ -551,7 +551,7 @@ export const VILLAGE_SEED = [
     "matchPattern": "promenade",
     "villageName": "Promenade",
     "villageSortHelp": "Promenade",
-    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/pomenade",
+    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/promenade",
     "village1": "abd8f137-2e49-45f7-bef9-d42760495421",
     "order": 69
   },
