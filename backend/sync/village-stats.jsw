@@ -120,6 +120,88 @@ function norm(v) {
     return (v == null || v === '') ? null : v;
 }
 
+// ---------------------------------------------------------------------------
+// Historical range ratchet.
+//
+// The neighborhoods collection also carries hand-curated all-time ranges:
+//   priceRange   e.g. "$500k - $2M"
+//   squareFeet   e.g. "1,200 - 4,100"
+// These are an envelope of everything the neighborhood has seen. The sync only
+// ever WIDENS them - when the current active range's band escapes the
+// historical band - and preserves the untouched end's original text verbatim.
+// Unparseable hand-written values are left alone (and logged). Blank fields
+// are seeded from the current active range.
+
+const HIST_PRICE_FIELD = 'priceRange';
+const HIST_SQFT_FIELD = 'squareFeet';
+
+// "$500s" / "$500k" / "$1M" / "$1.5M" / "$1,500,000" / "750000" -> number.
+function parsePriceToken(t) {
+    if (typeof t !== 'string') return null;
+    const s = t.trim().replace(/^\$/, '').replace(/,/g, '');
+    let m = /^([0-9]+(?:\.[0-9]+)?)\s*[mM]$/.exec(s);
+    if (m) return Math.round(parseFloat(m[1]) * 1000000);
+    m = /^([0-9]+(?:\.[0-9]+)?)\s*[ksKS]$/.exec(s);
+    if (m) return Math.round(parseFloat(m[1]) * 1000);
+    m = /^([0-9]+)$/.exec(s);
+    if (m) return parseInt(m[1], 10);
+    return null;
+}
+
+// "1,200" / "1200" -> number.
+function parseSqftToken(t) {
+    if (typeof t !== 'string') return null;
+    const s = t.trim().replace(/,/g, '');
+    const m = /^([0-9]+)$/.exec(s);
+    return m ? parseInt(m[1], 10) : null;
+}
+
+function sqftToken(value) {
+    return commafy(Math.floor(value / 100) * 100);
+}
+
+// Split "X - Y" (hyphen or en dash, or the word 'to') into end texts.
+// A single token is a collapsed range (lo == hi).
+function splitRange(text) {
+    const parts = String(text).split(/\s*(?:-|–|\bto\b)\s*/).filter(Boolean);
+    if (parts.length === 1) return { loText: parts[0], hiText: parts[0] };
+    if (parts.length === 2) return { loText: parts[0], hiText: parts[1] };
+    return null;
+}
+
+// Ratchet one historical range string outward against the active min/max.
+// Returns the new string when a widen (or blank-seed) is needed, else null.
+function widenHistoricalRange(existingText, activeMin, activeMax, parseToken, formatToken) {
+    if (activeMin == null || activeMax == null) return null;
+
+    // Compare at band level: format the active ends first, then parse them
+    // back, so an active value inside the same display band never churns.
+    const activeLoText = formatToken(activeMin);
+    const activeHiText = formatToken(activeMax);
+    const activeLo = parseToken(activeLoText);
+    const activeHi = parseToken(activeHiText);
+    if (activeLo == null || activeHi == null) return null;
+
+    const current = norm(existingText);
+    if (current == null) {
+        return activeLoText === activeHiText ? activeLoText : `${activeLoText} - ${activeHiText}`;
+    }
+
+    const ends = splitRange(current);
+    if (!ends) return null;
+    const lo = parseToken(ends.loText);
+    const hi = parseToken(ends.hiText);
+    if (lo == null || hi == null) {
+        console.log('historical range not parseable, leaving as-is:', current);
+        return null;
+    }
+
+    const loText = activeLo < lo ? activeLoText : ends.loText;
+    const hiText = activeHi > hi ? activeHiText : ends.hiText;
+    if (loText === ends.loText && hiText === ends.hiText) return null;
+    return loText === hiText ? loText : `${loText} - ${hiText}`;
+}
+
 // Recompute the three *Active range fields on every neighborhood row from the
 // current active listings. Neighborhoods with no active listings have those
 // fields cleared. Respects an optional deadline (ms epoch); if it runs out of
@@ -138,10 +220,23 @@ export async function refreshVillageActiveRanges(deadline) {
         const squareFeetActive = formatSqftRange(agg.sqftMin, agg.sqftMax);
         const bedroomRangeActive = formatBedroomRange(agg.bedMin, agg.bedMax);
 
+        // Ratchet the hand-curated all-time ranges outward when the active
+        // range escapes them. null = no change needed.
+        const widenedPrice = widenHistoricalRange(
+            row[HIST_PRICE_FIELD], agg.priceMin, agg.priceMax,
+            parsePriceToken, v => priceToken(v, 'floor'));
+        const widenedSqft = widenHistoricalRange(
+            row[HIST_SQFT_FIELD], agg.sqftMin, agg.sqftMax,
+            parseSqftToken, sqftToken);
+
         if (norm(row.priceRangeActive) !== priceRangeActive ||
             norm(row.squareFeetActive) !== squareFeetActive ||
-            norm(row.bedroomRangeActive) !== bedroomRangeActive) {
-            updates.push({ ...row, priceRangeActive, squareFeetActive, bedroomRangeActive });
+            norm(row.bedroomRangeActive) !== bedroomRangeActive ||
+            widenedPrice != null || widenedSqft != null) {
+            const update = { ...row, priceRangeActive, squareFeetActive, bedroomRangeActive };
+            if (widenedPrice != null) update[HIST_PRICE_FIELD] = widenedPrice;
+            if (widenedSqft != null) update[HIST_SQFT_FIELD] = widenedSqft;
+            updates.push(update);
         }
     }
 

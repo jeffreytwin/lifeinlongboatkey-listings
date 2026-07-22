@@ -645,10 +645,14 @@ $w.onReady(async function () {
           valData['village1'] = "890c95c6-ab4b-46a4-b212-854f3be6826f";
         }
         if (isLongboatShores !== -1) {
-          valData['Village'] = "Longboat Shores";
-          valData['villageSortHelp'] = "Longboat Shores";
-          valData['VillageURL'] = `${baseURL}/neighborhood/longboat-shores`;
-          valData['village1'] = "93b2bc88-383d-45b0-aab4-b54100364e02";
+          // Longboat Shores was merged into Buttonwood Harbor (July 2026):
+          // the pattern still matches the LONGBOAT SHORES* subdivisions, but
+          // labels them as Buttonwood Harbor and points at its neighborhood
+          // row.
+          valData['Village'] = "Buttonwood Harbor";
+          valData['villageSortHelp'] = "Buttonwood Harbor";
+          valData['VillageURL'] = `${baseURL}/neighborhood/buttonwood-harbor`;
+          valData['village1'] = "3e003132-d274-4287-bd08-5af1b0f53832";
         }
         if (isLongboatTerrace !== -1) {
           valData['Village'] = "Longboat Terrace";
@@ -713,7 +717,7 @@ $w.onReady(async function () {
         if (isPromenade !== -1) {
           valData['Village'] = "Promenade";
           valData['villageSortHelp'] = "Promenade";
-          valData['VillageURL'] = `${baseURL}/neighborhood/pomenade`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/promenade`;
           valData['village1'] = "abd8f137-2e49-45f7-bef9-d42760495421";
         }
         if (isQueensHarbour !== -1) {
