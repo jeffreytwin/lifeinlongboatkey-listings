@@ -931,9 +931,9 @@ $w.onReady(async function () {
           valData['village1'] = "0b9db51f-91da-42a6-9435-03797d9305c4";
         }
         if (isWaterClub !== -1) {
-          valData['Village'] = "Water Club";
-          valData['villageSortHelp'] = "Water Club";
-          valData['VillageURL'] = `${baseURL}/neighborhood/water-club`;
+          valData['Village'] = "The Water Club";
+          valData['villageSortHelp'] = "The Water Club";
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-water-club`;
           valData['village1'] = "f87c271c-63a1-4fb8-89fd-2dc3f452a6b9";
         }
         if (isWestchester !== -1) {
