@@ -106,6 +106,24 @@ node scripts/generate-villages-seed.js
 
 This rewrites `backend/sync/villages.seed.jsw`. Review the diff, commit, redeploy, then POST `/_functions/seedVillages` to apply.
 
+## Auditing against a Redfin pull
+
+To spot-check that the pipeline isn't silently dropping listings, load `Stagging` with a fresh Redfin active-listings file via the legacy dashboard process, then:
+
+```bash
+curl "https://<site>/_functions/compareStagingVsLive" \
+  -H "x-sync-secret: $SYNC_TRIGGER_SECRET"
+```
+
+The response re-runs every staged subdivision through the live `Villages` matcher and buckets the results. The buckets that matter:
+
+- `missingFromLive` - Active, matches a current village, but not in `HousesforSale`. Investigate each: these are the silent drops.
+- `liveNotInStaging` - on the site but absent from the Redfin file: stale rows the sync should have removed, or gaps in the Redfin export.
+- `unmatchedButOldProcessHadVillage` - the legacy matcher assigned a village the current one doesn't (removed villages, fixed match bugs). Confirm each removal was intentional.
+- `villageNameMismatches` - informational; renames/merges between the legacy and current village lists.
+
+The endpoint is read-only. Legacy-staged rows sit inert in `Stagging` (the drain skips them because their galleries hold raw MLS media objects, not upload items), but they still cost the hourly drain a wasted fan-out wave - bulk-delete the Redfin rows from `Stagging` when the audit is done.
+
 ## Verification checklist
 
 - `wixData.query('SyncRuns').descending('startedAt').limit(1).find()` - newest row `status: ok`, `startedAt` within the last hour.

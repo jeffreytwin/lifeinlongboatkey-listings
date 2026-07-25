@@ -1,0 +1,140 @@
+import wixData from 'wix-data';
+import { matchVillage, invalidateVillageCache } from 'backend/sync/villages';
+
+const STAGGING = 'Stagging';
+const HOUSES = 'HousesforSale';
+const PAGE = 1000;
+
+async function fetchAll(collection) {
+    const all = [];
+    let skip = 0;
+    while (true) {
+        const res = await wixData.query(collection).limit(PAGE).skip(skip).find({ suppressAuth: true });
+        all.push(...res.items);
+        if (res.items.length < PAGE) break;
+        skip += res.items.length;
+    }
+    return all;
+}
+
+// Distinguishes rows staged by the live pipeline (photo uploads in flight)
+// from rows bulk-loaded by the legacy Redfin dashboard process. Pipeline rows
+// carry isPublished and gallery items shaped {type, title, src}; legacy rows
+// stage the raw MLS Media array (objects keyed MediaURL/Order) and predate
+// the isPublished field.
+function isLivePipelineRow(row) {
+    if (Object.prototype.hasOwnProperty.call(row, 'isPublished')) return true;
+    const g = row.listingImageGallery;
+    if (Array.isArray(g) && g.length) return typeof g[0].src === 'string';
+    return false;
+}
+
+function streetTextFor(row) {
+    const maps = row.propertyAddressGoogleMaps;
+    if (maps && maps.streetAddress && maps.streetAddress.name) return maps.streetAddress.name;
+    return row.propertyAddress || '';
+}
+
+function summaryRow(row, extra) {
+    return {
+        id: row._id,
+        address: row.propertyAddress || null,
+        subdivision: row.subdivision || null,
+        status: row.standardStatus || null,
+        homeType: row.homeType || null,
+        price: row.listingPricePure != null ? row.listingPricePure : null,
+        stagedVillage: row.village || null,
+        ...extra
+    };
+}
+
+// Read-only audit of a Redfin-loaded Stagging snapshot against HousesforSale.
+// Every staged subdivision is re-run through the live Villages matcher, so the
+// buckets reflect what the current pipeline would do with each listing:
+//   missingFromLive   - Active, matches a current village, absent from
+//                       HousesforSale. These are the potential silent drops.
+//   liveNotInStaging  - on the site but absent from the Redfin pull. Stale
+//                       rows the sync should have removed, or Redfin gaps.
+//   unmatchedButOldProcessHadVillage - no current village, but the legacy
+//                       matcher assigned one (e.g. villages removed on
+//                       purpose). Confirm each removal was intentional.
+//   villageNameMismatches - listing is fine, but staged/live village names
+//                       disagree with the current matcher (renames, merges).
+//   notActive         - staged rows whose MLS status has already moved off
+//                       Active; the pipeline is right to exclude them.
+//   unmatchedDiscard  - no village under the current matcher; not site
+//                       inventory. Includes the droppedVillages subset.
+//   inFlight          - live-pipeline rows mid-photo-upload; excluded from
+//                       the audit (they'll promote on their own).
+export async function compareStagingVsLive() {
+    invalidateVillageCache();
+    const [staging, houses] = await Promise.all([fetchAll(STAGGING), fetchAll(HOUSES)]);
+    const houseById = new Map(houses.map(h => [h._id, h]));
+    const stagingIds = new Set(staging.map(s => s._id));
+
+    const inFlight = [];
+    const missingFromLive = [];
+    const notActive = [];
+    const unmatchedDiscard = [];
+    const droppedVillages = [];
+    const nameMismatches = [];
+    const unmatchedButOnSite = [];
+    let presentAndMatched = 0;
+
+    for (const row of staging) {
+        if (isLivePipelineRow(row)) {
+            inFlight.push(row._id);
+            continue;
+        }
+        const live = houseById.get(row._id);
+        const village = await matchVillage(row.subdivision, streetTextFor(row));
+        if (!village) {
+            const r = summaryRow(row, { onSite: !!live });
+            unmatchedDiscard.push(r);
+            if (row.village) droppedVillages.push(r);
+            if (live) unmatchedButOnSite.push(r);
+            continue;
+        }
+        const active = (row.standardStatus || '').toLowerCase() === 'active';
+        if (!live) {
+            const r = summaryRow(row, { currentVillage: village.villageName });
+            (active ? missingFromLive : notActive).push(r);
+            continue;
+        }
+        presentAndMatched += 1;
+        const liveVillage = live.village || null;
+        const stagedVillage = row.village || null;
+        if (liveVillage !== village.villageName || stagedVillage !== village.villageName) {
+            nameMismatches.push(summaryRow(row, { currentVillage: village.villageName, liveVillage }));
+        }
+    }
+
+    const liveNotInStaging = houses
+        .filter(h => !stagingIds.has(h._id))
+        .map(h => summaryRow(h, { liveVillage: h.village || null }));
+
+    return {
+        counts: {
+            staging: staging.length,
+            stagingFromOldProcess: staging.length - inFlight.length,
+            stagingInFlightPipeline: inFlight.length,
+            housesForSale: houses.length,
+            presentAndMatched,
+            missingFromLive: missingFromLive.length,
+            notActive: notActive.length,
+            unmatchedDiscard: unmatchedDiscard.length,
+            unmatchedButOldProcessHadVillage: droppedVillages.length,
+            villageNameMismatches: nameMismatches.length,
+            unmatchedButOnSite: unmatchedButOnSite.length,
+            liveNotInStaging: liveNotInStaging.length
+        },
+        missingFromLive,
+        liveNotInStaging,
+        unmatchedButOldProcessHadVillage: droppedVillages,
+        unmatchedButOnSite,
+        villageNameMismatches: nameMismatches,
+        notActive,
+        inFlight,
+        unmatchedDiscard
+    };
+}

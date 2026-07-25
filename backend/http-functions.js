@@ -7,6 +7,7 @@ import { processOneStaggingRow } from 'backend/sync/stagging';
 import { seedVillages } from 'backend/sync/seed';
 import { reclassifyHousesforSaleByVillage, reclassifyAllHousesforSale, refreshListings } from 'backend/sync/run';
 import { refreshVillageActiveRanges } from 'backend/sync/village-stats';
+import { compareStagingVsLive } from 'backend/sync/compare';
 
 const CHAIN_DEADLINE_MS = 50 * 1000;
 
@@ -41,6 +42,20 @@ export async function get_syncStatus(request) {
     try {
         const res = await wixData.query('SyncRuns').descending('startedAt').limit(10).find({ suppressAuth: true });
         return jsonResponse(200, { runs: res.items });
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Read-only audit: diffs a Redfin-loaded Stagging snapshot against
+// HousesforSale, re-running every staged subdivision through the live
+// Villages matcher. Returns bucketed listing-level results; writes nothing.
+// See README "Auditing against a Redfin pull".
+export async function get_compareStagingVsLive(request) {
+    if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const result = await compareStagingVsLive();
+        return jsonResponse(200, result);
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });
     }
