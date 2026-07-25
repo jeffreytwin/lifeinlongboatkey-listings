@@ -660,7 +660,7 @@ export async function runSync(mode) {
             datesRefreshed = await refreshAllDateOfMlsPull(deadline);
         }
 
-        // Refresh per-neighborhood active range stats (price/sqft/bedrooms) on
+        // Refresh per-neighborhood active range stats (price/sqft/beds/garage) on
         // HousesforSale-DynamicPages. Wrapped so a stats failure never breaks
         // the core listing sync.
         if (Date.now() < deadline) {
