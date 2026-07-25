@@ -121,7 +121,7 @@ export async function post_refreshListings(request) {
     }
 }
 
-// Recompute per-neighborhood active range stats (price/sqft/bedrooms) on
+// Recompute per-neighborhood active range stats (price/sqft/beds/garage) on
 // HousesforSale-DynamicPages. The hourly sync also does this; this is for
 // on-demand runs. Re-run if the response reports remaining: true.
 export async function post_refreshVillageRanges(request) {
