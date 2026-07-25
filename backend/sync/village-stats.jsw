@@ -126,6 +126,7 @@ function norm(v) {
 // The neighborhoods collection also carries hand-curated all-time ranges:
 //   priceRange   e.g. "$500k - $2M"
 //   squareFeet   e.g. "1,200 - 4,100"
+//   bedroomRange e.g. "2 - 4"
 // These are an envelope of everything the neighborhood has seen. The sync only
 // ever WIDENS them - when the current active range's band escapes the
 // historical band - and preserves the untouched end's original text verbatim.
@@ -134,6 +135,7 @@ function norm(v) {
 
 const HIST_PRICE_FIELD = 'priceRange';
 const HIST_SQFT_FIELD = 'squareFeet';
+const HIST_BED_FIELD = 'bedroomRange';
 
 // "$500s" / "$500k" / "$1M" / "$1.5M" / "$1,500,000" / "750000" -> number.
 function parsePriceToken(t) {
@@ -148,8 +150,8 @@ function parsePriceToken(t) {
     return null;
 }
 
-// "1,200" / "1200" -> number.
-function parseSqftToken(t) {
+// "1,200" / "1200" / "3" -> number. Used for both sqft and bedroom tokens.
+function parseIntToken(t) {
     if (typeof t !== 'string') return null;
     const s = t.trim().replace(/,/g, '');
     const m = /^([0-9]+)$/.exec(s);
@@ -227,15 +229,19 @@ export async function refreshVillageActiveRanges(deadline) {
             parsePriceToken, v => priceToken(v, 'floor'));
         const widenedSqft = widenHistoricalRange(
             row[HIST_SQFT_FIELD], agg.sqftMin, agg.sqftMax,
-            parseSqftToken, sqftToken);
+            parseIntToken, sqftToken);
+        const widenedBeds = widenHistoricalRange(
+            row[HIST_BED_FIELD], agg.bedMin, agg.bedMax,
+            parseIntToken, v => String(v));
 
         if (norm(row.priceRangeActive) !== priceRangeActive ||
             norm(row.squareFeetActive) !== squareFeetActive ||
             norm(row.bedroomRangeActive) !== bedroomRangeActive ||
-            widenedPrice != null || widenedSqft != null) {
+            widenedPrice != null || widenedSqft != null || widenedBeds != null) {
             const update = { ...row, priceRangeActive, squareFeetActive, bedroomRangeActive };
             if (widenedPrice != null) update[HIST_PRICE_FIELD] = widenedPrice;
             if (widenedSqft != null) update[HIST_SQFT_FIELD] = widenedSqft;
+            if (widenedBeds != null) update[HIST_BED_FIELD] = widenedBeds;
             updates.push(update);
         }
     }
