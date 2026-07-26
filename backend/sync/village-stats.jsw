@@ -10,6 +10,8 @@ import wixData from 'wix-data';
 //   squareFeetActive       e.g. "1,200 - 4,100" (from squareFeet)
 //   bedroomRangeActive     e.g. "2 - 4"         (from bedrooms)
 //   garageSizeRangeActive  e.g. "1 - 3 Car"     (from garages)
+//   activeListingCount     e.g. 12              (published listings only)
+//   zeroSince              stamped when the count hits 0, cleared on recovery
 //
 // Formatting rules (active = current listings only):
 //   Price  - banded to a display token, always rounding *down* (never up) so a
@@ -109,7 +111,7 @@ async function aggregateActiveByVillage() {
     let skip = 0;
     while (true) {
         const res = await wixData.query(HOUSES)
-            .fields('listingPricePure', 'squareFeet', 'bedrooms', 'garages', 'village1')
+            .fields('listingPricePure', 'squareFeet', 'bedrooms', 'garages', 'isPublished', 'village1')
             .limit(1000).skip(skip)
             .find({ suppressAuth: true });
 
@@ -118,6 +120,11 @@ async function aggregateActiveByVillage() {
             if (!key || typeof key !== 'string') continue;
             let agg = map.get(key);
             if (!agg) { agg = {}; map.set(key, agg); }
+
+            agg.total = (agg.total || 0) + 1;
+            if (row.isPublished === true) {
+                agg.published = (agg.published || 0) + 1;
+            }
 
             const price = row.listingPricePure;
             if (typeof price === 'number' && isFinite(price) && price > 0) {
@@ -245,9 +252,10 @@ function widenGarageRange(existingText, activeMin, activeMax) {
     return widened == null ? null : `${widened} Car`;
 }
 
-// Recompute the three *Active range fields on every neighborhood row from the
-// current active listings. Neighborhoods with no active listings have those
-// fields cleared. Respects an optional deadline (ms epoch); if it runs out of
+// Recompute the *Active range fields and published-listing count on every
+// neighborhood row from the current active listings. Neighborhoods with no
+// active listings have the ranges cleared and their zero-inventory timestamp
+// stamped. Respects an optional deadline (ms epoch); if it runs out of
 // budget mid-write it returns remaining: true so the caller can re-invoke.
 export async function refreshVillageActiveRanges(deadline) {
     const map = await aggregateActiveByVillage();
@@ -257,6 +265,7 @@ export async function refreshVillageActiveRanges(deadline) {
     const rows = res.items;
 
     const updates = [];
+    let zeroInventory = 0;
     for (const row of rows) {
         const agg = map.get(row._id) || {};
         const priceRangeActive = formatPriceRange(agg.priceMin, agg.priceMax);
@@ -278,15 +287,29 @@ export async function refreshVillageActiveRanges(deadline) {
         const widenedGarage = widenGarageRange(
             row[HIST_GARAGE_FIELD], agg.garageMin, agg.garageMax);
 
+        // Published listings drive the Google Ads inventory feed: an ad click
+        // lands on the neighborhood page, which only shows published rows.
+        // zeroSince marks the >0 -> 0 transition and is preserved verbatim
+        // while the count stays 0, so the ads feed can hold a grace window
+        // before pausing; any recovery clears it.
+        const activeListingCount = agg.published || 0;
+        if (activeListingCount === 0) zeroInventory++;
+        const prevCount = typeof row.activeListingCount === 'number' ? row.activeListingCount : null;
+        const prevZero = row.zeroSince instanceof Date ? row.zeroSince : null;
+        const zeroSince = activeListingCount > 0 ? null : (prevZero || new Date());
+
         if (norm(row.priceRangeActive) !== priceRangeActive ||
             norm(row.squareFeetActive) !== squareFeetActive ||
             norm(row.bedroomRangeActive) !== bedroomRangeActive ||
             norm(row.garageSizeRangeActive) !== garageSizeRangeActive ||
+            prevCount !== activeListingCount ||
+            (prevZero && prevZero.getTime()) !== (zeroSince && zeroSince.getTime()) ||
             widenedPrice != null || widenedSqft != null || widenedBeds != null ||
             widenedGarage != null) {
             const update = {
                 ...row,
-                priceRangeActive, squareFeetActive, bedroomRangeActive, garageSizeRangeActive
+                priceRangeActive, squareFeetActive, bedroomRangeActive, garageSizeRangeActive,
+                activeListingCount, zeroSince
             };
             if (widenedPrice != null) update[HIST_PRICE_FIELD] = widenedPrice;
             if (widenedSqft != null) update[HIST_SQFT_FIELD] = widenedSqft;
@@ -299,7 +322,7 @@ export async function refreshVillageActiveRanges(deadline) {
     let written = 0;
     for (let i = 0; i < updates.length; i += WRITE_CHUNK) {
         if (deadline && Date.now() > deadline) {
-            return { villages: rows.length, changed: updates.length, written, remaining: true };
+            return { villages: rows.length, changed: updates.length, zeroInventory, written, remaining: true };
         }
         const chunk = updates.slice(i, i + WRITE_CHUNK);
         try {
@@ -310,5 +333,5 @@ export async function refreshVillageActiveRanges(deadline) {
         }
     }
 
-    return { villages: rows.length, changed: updates.length, written, remaining: false };
+    return { villages: rows.length, changed: updates.length, zeroInventory, written, remaining: false };
 }

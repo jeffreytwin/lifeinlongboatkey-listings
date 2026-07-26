@@ -1,0 +1,105 @@
+import wixData from 'wix-data';
+
+// Read-only per-community inventory feed for the Google Ads automation.
+//
+// The Google Ads Script in scripts/google-ads-inventory-sync.js calls
+// GET /_functions/adsInventoryFeed hourly, matches ad groups to the
+// communities below by name, pauses ad groups whose community has been out
+// of inventory past the grace window, and re-enables them when inventory
+// returns.
+//
+// Counts come from HousesforSale-DynamicPages.activeListingCount / zeroSince,
+// maintained hourly by village-stats. Anything ambiguous - no dynamic-page
+// row, stats never run, a zero count without its timestamp - fails OPEN
+// (advertise: true), because pausing is the destructive action; such rows are
+// reported under anomalies instead of being acted on.
+
+const VILLAGES = 'Villages';
+const NEIGHBORHOODS = 'HousesforSale-DynamicPages';
+
+// A community must sit at zero published listings for this long before the
+// feed tells the Ads Script to stop advertising it. Rides out sync hiccups,
+// listing-removal latency, and reclassification sweeps without flapping ads.
+export const PAUSE_AFTER_HOURS = 6;
+
+export async function buildAdsInventoryFeed() {
+    const now = new Date();
+    const [villagesRes, pagesRes] = await Promise.all([
+        wixData.query(VILLAGES).limit(1000).find({ suppressAuth: true }),
+        wixData.query(NEIGHBORHOODS).limit(1000).find({ suppressAuth: true })
+    ]);
+    const pageById = new Map(pagesRes.items.map(r => [r._id, r]));
+
+    // Several Villages rows can share one community (extra match patterns for
+    // alternate subdivision spellings); emit each community exactly once.
+    const seen = new Set();
+    const referenced = new Set();
+    const communities = [];
+    const villagesWithoutDynamicPage = [];
+    const zeroWithoutTimestamp = [];
+    let withDynamicPage = 0, advertisable = 0, zeroInventory = 0, inGrace = 0, missingStats = 0;
+
+    for (const v of villagesRes.items) {
+        if (!v.villageName) continue;
+        const key = v.village1 || v.villageName;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (v.village1) referenced.add(v.village1);
+
+        const page = v.village1 ? pageById.get(v.village1) : undefined;
+        let activeListingCount = null;
+        let zeroSince = null;
+        let advertise = true;
+
+        if (!page) {
+            villagesWithoutDynamicPage.push(v.villageName);
+            missingStats++;
+        } else {
+            withDynamicPage++;
+            activeListingCount = typeof page.activeListingCount === 'number' ? page.activeListingCount : null;
+            zeroSince = page.zeroSince instanceof Date ? page.zeroSince
+                : page.zeroSince ? new Date(page.zeroSince) : null;
+            if (activeListingCount == null) {
+                missingStats++;
+            } else if (activeListingCount === 0) {
+                zeroInventory++;
+                if (!zeroSince) {
+                    zeroWithoutTimestamp.push(v.villageName);
+                } else if (now.getTime() - zeroSince.getTime() < PAUSE_AFTER_HOURS * 3600 * 1000) {
+                    inGrace++;
+                } else {
+                    advertise = false;
+                }
+            }
+        }
+
+        if (advertise) advertisable++;
+        communities.push({
+            villageId: v.village1 || null,
+            villageName: v.villageName,
+            villageUrl: v.villageURL || null,
+            activeListingCount,
+            zeroSince: zeroSince ? zeroSince.toISOString() : null,
+            advertise
+        });
+    }
+
+    const dynamicPagesWithoutVillage = pagesRes.items
+        .filter(r => !referenced.has(r._id))
+        .map(r => r.title || r._id);
+
+    return {
+        generatedAt: now.toISOString(),
+        pauseAfterHours: PAUSE_AFTER_HOURS,
+        counts: {
+            villages: communities.length,
+            withDynamicPage,
+            advertisable,
+            zeroInventory,
+            inGrace,
+            missingStats
+        },
+        communities,
+        anomalies: { villagesWithoutDynamicPage, zeroWithoutTimestamp, dynamicPagesWithoutVillage }
+    };
+}
