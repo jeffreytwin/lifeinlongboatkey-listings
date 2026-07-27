@@ -11,6 +11,11 @@
 //
 // Element IDs assumed to exist on the page: #dataset2, #dropdown1 (amenity),
 // #dropdown2 (price), #button2 (Load more).
+//
+// IMPORTANT editor setting: #dataset2's "Number of items to display" must be
+// set to 9 (= PAGE_SIZE). The previous code forced 9 at runtime on every
+// load, hiding a too-high editor value; without that clamp the editor value
+// shows through, and it also controls how many panels SSR has to render.
 
 import wixData from 'wix-data';
 import wixWindow from 'wix-window';
@@ -63,10 +68,24 @@ $w.onReady(function () {
       });
   });
 
-  // The dataset loads its own first page of 9 - don't reset or refilter it
-  // on initial load; just sync the Load more button once it has its counts.
+  // The dataset loads its own first page - don't reset or refilter it
+  // during SSR. The dataset's "Number of items to display" must be 9 in
+  // the editor settings: that setting decides how many panels the server
+  // renders. The old code masked a too-high setting by forcing 9 on every
+  // load; the browser-only clamp below self-corrects it (one extra fetch),
+  // but fixing the editor setting is what keeps the server render light.
   $w(DATASET_ID).onReady(() => {
-    updateLoadMoreButton();
+    if (wixWindow.rendering.env === "browser" && $w(DATASET_ID).getPageSize() > PAGE_SIZE) {
+      $w(DATASET_ID).setPageSize(PAGE_SIZE)
+        .then(() => {
+          updateLoadMoreButton();
+        })
+        .catch((err) => {
+          console.error("Error resetting page size:", err);
+        });
+    } else {
+      updateLoadMoreButton();
+    }
   });
 
   // Dropdown options are only usable once a visitor can interact, so build
