@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """Audit the Neighborhoods & Condos (NeighborhoodsCondos) Wix collection so every
 'Nearby Neighborhood N - Description' equals the referenced neighborhood's
-'Neighborhood Short Description' (field key: villageShortDescription).
+'Neighborhood Short Description' (field key: villageShortDescription), every
+nearby link points at the referenced neighborhood's actual page, and every
+nearby title uses the neighborhood's official name.
 
 Usage: python3 audit-nearby-descriptions.py <export.csv> <output.xlsx> [import.csv]
 
 Input is the CSV exported from the Wix content manager. Output is an .xlsx with:
-  - 'Paste into Wix'  : all rows in export order with corrected descriptions
-                        (changed cells highlighted yellow)
+  - 'Paste into Wix'  : all rows in export order with corrected titles and
+                        descriptions (changed cells highlighted yellow)
   - 'Changed Cells'   : only the slots whose description changed, old vs new
+  - 'Title Changes'   : nearby titles normalized to the official name
   - 'Link Issues'     : nearby links whose slug doesn't match the referenced
                         neighborhood's current page slug
 
 If [import.csv] is given, also writes a Wix-importable CSV: a byte-faithful
 copy of the export (same columns, same row order, utf-8 BOM) with only the
-nearby-neighborhood description cells synced and the flagged links corrected,
-so importing it back updates existing items by ID.
+nearby-neighborhood titles, descriptions, and flagged links corrected, so
+importing it back updates existing items by ID.
 """
 import csv
 import re
@@ -67,10 +70,10 @@ def build_resolver(rows):
 
 
 def write_import_csv(csv_path, rows, resolve, import_path):
-    """Copy the export verbatim, changing only stale descriptions and bad links."""
+    """Copy the export verbatim, fixing only stale descriptions, titles, and links."""
     with open(csv_path, encoding='utf-8-sig', newline='') as f:
         fieldnames = csv.DictReader(f).fieldnames
-    desc_edits = link_edits = 0
+    desc_edits = title_edits = link_edits = 0
     with open(import_path, 'w', encoding='utf-8-sig', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -86,12 +89,17 @@ def write_import_csv(csv_path, rows, resolve, import_path):
                 if r[f'Nearby Neighborhood {i} - Description'].strip() != new:
                     out[f'Nearby Neighborhood {i} - Description'] = new
                     desc_edits += 1
+                official = ref['Neighborhood Name'].strip()
+                if title != official:
+                    out[f'Nearby Neighborhood {i} - Title'] = official
+                    title_edits += 1
                 if how != 'exact link':
                     out[f'Nearby Neighborhood {i} Link'] = (
                         'https://www.lifeinlongboatkey.com' + ref['Neighborhood Pages Main'])
                     link_edits += 1
             w.writerow(out)
-    print(f'import csv: desc_edits={desc_edits} link_edits={link_edits} -> {import_path}')
+    print(f'import csv: desc_edits={desc_edits} title_edits={title_edits} '
+          f'link_edits={link_edits} -> {import_path}')
 
 
 def main(csv_path, out_path, import_path=None):
@@ -124,7 +132,7 @@ def main(csv_path, out_path, import_path=None):
         head += [f'Nearby Neighborhood {i} - Title', f'Nearby Neighborhood {i} - Description']
     ws.append(head)
 
-    changes, issues = [], []
+    changes, title_changes, issues = [], [], []
     for r in rows:
         out = [r['Neighborhood Name'], r['ID']]
         marks = []
@@ -138,11 +146,15 @@ def main(csv_path, out_path, import_path=None):
                 issues.append([r['Neighborhood Name'], i, title, link,
                                'UNRESOLVED - no neighborhood found; description left as-is', ''])
                 continue
+            official = ref['Neighborhood Name'].strip()
             new = ref['Neighborhood Short Description'].strip()
-            out += [title, new]
+            out += [official, new]
+            if official != title:
+                marks.append(len(out) - 1)
+                title_changes.append([r['Neighborhood Name'], i, title, official])
             if new != cur:
                 marks.append(len(out))
-                changes.append([r['Neighborhood Name'], i, title,
+                changes.append([r['Neighborhood Name'], i, official,
                                 ref['Neighborhood Name'], cur, new])
             if how != 'exact link':
                 issues.append([r['Neighborhood Name'], i, title, link, how,
@@ -164,6 +176,15 @@ def main(csv_path, out_path, import_path=None):
             cell.font = body_font
             cell.alignment = wrap
     style_sheet(ws2, [24, 6, 22, 24, 60, 60])
+
+    wst = wb.create_sheet('Title Changes')
+    wst.append(['Neighborhood (row)', 'Slot', 'Current Title', 'Official Name'])
+    for row in title_changes:
+        wst.append(row)
+        for cell in wst[wst.max_row]:
+            cell.font = body_font
+            cell.alignment = wrap
+    style_sheet(wst, [24, 6, 28, 28])
 
     ws3 = wb.create_sheet('Link Issues')
     ws3.append(['Neighborhood (row)', 'Slot', 'Nearby Title', 'Current Link',
