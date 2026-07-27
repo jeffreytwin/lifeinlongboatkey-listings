@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Audit the Neighborhoods & Condos (NeighborhoodsCondos) Wix collection so every
+'Nearby Neighborhood N - Description' equals the referenced neighborhood's
+'Neighborhood Short Description' (field key: villageShortDescription), every
+nearby link points at the referenced neighborhood's actual page, and every
+nearby title uses the neighborhood's official name.
+
+Usage: python3 audit-nearby-descriptions.py <export.csv> <output.xlsx> [import.csv]
+
+Input is the CSV exported from the Wix content manager. Output is an .xlsx with:
+  - 'Paste into Wix'  : all rows in export order with corrected titles and
+                        descriptions (changed cells highlighted yellow)
+  - 'Changed Cells'   : only the slots whose description changed, old vs new
+  - 'Title Changes'   : nearby titles normalized to the official name
+  - 'Link Issues'     : nearby links whose slug doesn't match the referenced
+                        neighborhood's current page slug
+
+If [import.csv] is given, also writes a Wix-importable CSV: a byte-faithful
+copy of the export (same columns, same row order, utf-8 BOM) with only the
+nearby-neighborhood titles, descriptions, and flagged links corrected, so
+importing it back updates existing items by ID.
+"""
+import csv
+import re
+import sys
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+SLOTS = ['1', '2', '3', '4']
+
+
+def norm_name(s):
+    s = s.strip().lower()
+    s = re.sub(r'^the\s+', '', s)
+    s = s.replace('&', 'and')
+    return re.sub(r'[^a-z0-9]+', ' ', s).strip()
+
+
+def slug_of(url):
+    m = re.search(r'/neighborhood(?:-homes-for-sale)?/([^/?#]+)', (url or '').strip())
+    return m.group(1).lower() if m else ''
+
+
+def build_resolver(rows):
+    by_slug = {slug_of(r['Neighborhood Pages Main']): r for r in rows}
+    by_name = {norm_name(r['Neighborhood Name']): r for r in rows}
+
+    def resolve(title, link):
+        s = slug_of(link)
+        if s in by_slug:
+            return by_slug[s], 'exact link'
+        if s:
+            alt = s[4:] if s.startswith('the-') else 'the-' + s
+            if alt in by_slug:
+                return by_slug[alt], 'link differs by "the-" prefix'
+            n = norm_name(s.replace('-', ' '))
+            if n in by_name:
+                return by_name[n], 'link slug matched as name'
+        if title and norm_name(title) in by_name:
+            return by_name[norm_name(title)], 'matched by title (link slug not found)'
+        if s:
+            cands = [k for k in by_slug if k.startswith(s) or s.startswith(k)]
+            if len(cands) == 1:
+                return by_slug[cands[0]], 'link slug is a partial match'
+        return None, None
+
+    return resolve
+
+
+def write_import_csv(csv_path, rows, resolve, import_path):
+    """Copy the export verbatim, fixing only stale descriptions, titles, and links."""
+    with open(csv_path, encoding='utf-8-sig', newline='') as f:
+        fieldnames = csv.DictReader(f).fieldnames
+    desc_edits = title_edits = link_edits = 0
+    with open(import_path, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in rows:
+            out = dict(r)
+            for i in SLOTS:
+                title = r[f'Nearby Neighborhood {i} - Title'].strip()
+                link = r[f'Nearby Neighborhood {i} Link'].strip()
+                ref, how = resolve(title, link)
+                if ref is None:
+                    continue
+                new = ref['Neighborhood Short Description'].strip()
+                if r[f'Nearby Neighborhood {i} - Description'].strip() != new:
+                    out[f'Nearby Neighborhood {i} - Description'] = new
+                    desc_edits += 1
+                official = ref['Neighborhood Name'].strip()
+                if title != official:
+                    out[f'Nearby Neighborhood {i} - Title'] = official
+                    title_edits += 1
+                if how != 'exact link':
+                    out[f'Nearby Neighborhood {i} Link'] = (
+                        'https://www.lifeinlongboatkey.com' + ref['Neighborhood Pages Main'])
+                    link_edits += 1
+            w.writerow(out)
+    print(f'import csv: desc_edits={desc_edits} title_edits={title_edits} '
+          f'link_edits={link_edits} -> {import_path}')
+
+
+def main(csv_path, out_path, import_path=None):
+    with open(csv_path, encoding='utf-8-sig', newline='') as f:
+        rows = list(csv.DictReader(f))
+    resolve = build_resolver(rows)
+
+    wb = Workbook()
+    header_font = Font(name='Arial', size=10, bold=True, color='FFFFFF')
+    header_fill = PatternFill('solid', fgColor='1F3864')
+    body_font = Font(name='Arial', size=10)
+    changed_fill = PatternFill('solid', fgColor='FFF2CC')
+    issue_fill = PatternFill('solid', fgColor='FCE4EC')
+    wrap = Alignment(wrap_text=True, vertical='top')
+
+    def style_sheet(ws, widths):
+        for c, w in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(c)].width = w
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(vertical='center')
+        ws.freeze_panes = 'A2'
+
+    # Sheet 1: full grid in export order, descriptions replaced
+    ws = wb.active
+    ws.title = 'Paste into Wix'
+    head = ['Neighborhood Name', 'ID']
+    for i in SLOTS:
+        head += [f'Nearby Neighborhood {i} - Title', f'Nearby Neighborhood {i} - Description']
+    ws.append(head)
+
+    changes, title_changes, issues = [], [], []
+    for r in rows:
+        out = [r['Neighborhood Name'], r['ID']]
+        marks = []
+        for i in SLOTS:
+            title = r[f'Nearby Neighborhood {i} - Title'].strip()
+            link = r[f'Nearby Neighborhood {i} Link'].strip()
+            cur = r[f'Nearby Neighborhood {i} - Description'].strip()
+            ref, how = resolve(title, link)
+            if ref is None:
+                out += [title, cur]
+                issues.append([r['Neighborhood Name'], i, title, link,
+                               'UNRESOLVED - no neighborhood found; description left as-is', ''])
+                continue
+            official = ref['Neighborhood Name'].strip()
+            new = ref['Neighborhood Short Description'].strip()
+            out += [official, new]
+            if official != title:
+                marks.append(len(out) - 1)
+                title_changes.append([r['Neighborhood Name'], i, title, official])
+            if new != cur:
+                marks.append(len(out))
+                changes.append([r['Neighborhood Name'], i, official,
+                                ref['Neighborhood Name'], cur, new])
+            if how != 'exact link':
+                issues.append([r['Neighborhood Name'], i, title, link, how,
+                               'https://www.lifeinlongboatkey.com' + ref['Neighborhood Pages Main']])
+        ws.append(out)
+        for cell in ws[ws.max_row]:
+            cell.font = body_font
+            cell.alignment = wrap
+        for col in marks:
+            ws.cell(row=ws.max_row, column=col).fill = changed_fill
+    style_sheet(ws, [24, 38] + [22, 60] * 4)
+
+    ws2 = wb.create_sheet('Changed Cells')
+    ws2.append(['Neighborhood (row)', 'Slot', 'Nearby Title', 'Description pulled from',
+                'Current Description', 'New Description (villageShortDescription)'])
+    for row in changes:
+        ws2.append(row)
+        for cell in ws2[ws2.max_row]:
+            cell.font = body_font
+            cell.alignment = wrap
+    style_sheet(ws2, [24, 6, 22, 24, 60, 60])
+
+    wst = wb.create_sheet('Title Changes')
+    wst.append(['Neighborhood (row)', 'Slot', 'Current Title', 'Official Name'])
+    for row in title_changes:
+        wst.append(row)
+        for cell in wst[wst.max_row]:
+            cell.font = body_font
+            cell.alignment = wrap
+    style_sheet(wst, [24, 6, 28, 28])
+
+    ws3 = wb.create_sheet('Link Issues')
+    ws3.append(['Neighborhood (row)', 'Slot', 'Nearby Title', 'Current Link',
+                'Problem', 'Suggested Link'])
+    for row in issues:
+        ws3.append(row)
+        for cell in ws3[ws3.max_row]:
+            cell.font = body_font
+            cell.alignment = wrap
+            cell.fill = issue_fill
+    style_sheet(ws3, [24, 6, 24, 55, 40, 55])
+
+    wb.save(out_path)
+    print(f'rows={len(rows)} changed={len(changes)} link_issues={len(issues)} -> {out_path}')
+
+    if import_path:
+        write_import_csv(csv_path, rows, resolve, import_path)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
