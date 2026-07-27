@@ -106,6 +106,16 @@ node scripts/generate-villages-seed.js
 
 This rewrites `backend/sync/villages.seed.jsw`. Review the diff, commit, redeploy, then POST `/_functions/seedVillages` to apply.
 
+## Checking links
+
+Export the `NeighborhoodsCondos` collection from the Wix CMS, then:
+
+```bash
+node scripts/check-links.js path/to/NeighborhoodsCondos.csv
+```
+
+Verifies nearby-neighborhood cross links and every `villages.seed.jsw` URL against the pages that actually exist (per the export's dynamic-page link field), then hits the live site pages, YouTube/Vimeo oEmbed for each neighborhood video, and the wixstatic image URLs. `--offline` skips the network checks. Exit code 1 means something is broken.
+
 ## Auditing against a Redfin pull
 
 To spot-check that the pipeline isn't silently dropping listings, load `Stagging` with a fresh Redfin active-listings file via the legacy dashboard process, then:
