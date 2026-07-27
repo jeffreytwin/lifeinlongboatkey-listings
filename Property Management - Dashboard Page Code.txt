@@ -789,7 +789,7 @@ $w.onReady(async function () {
         if (isSeahorseBeachResort !== -1) {
           valData['Village'] = "Seahorse Beach Resort";
           valData['villageSortHelp'] = "Seahorse Beach Resort";
-          valData['VillageURL'] = `${baseURL}/neighborhood/sea-horse`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/seahorse-beach-resort`;
           valData['village1'] = "9766086d-8c26-4c54-a9ce-90224d951e58";
         }
         if (isSeaplace !== -1) {
@@ -933,7 +933,7 @@ $w.onReady(async function () {
         if (isWaterClub !== -1) {
           valData['Village'] = "Water Club";
           valData['villageSortHelp'] = "Water Club";
-          valData['VillageURL'] = `${baseURL}/neighborhood/water-club`;
+          valData['VillageURL'] = `${baseURL}/neighborhood/the-water-club`;
           valData['village1'] = "f87c271c-63a1-4fb8-89fd-2dc3f452a6b9";
         }
         if (isWestchester !== -1) {
