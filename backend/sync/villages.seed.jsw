@@ -647,7 +647,7 @@ export const VILLAGE_SEED = [
     "matchPattern": "seahorse",
     "villageName": "Seahorse Beach Resort",
     "villageSortHelp": "Seahorse Beach Resort",
-    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/sea-horse",
+    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/seahorse-beach-resort",
     "village1": "9766086d-8c26-4c54-a9ce-90224d951e58",
     "order": 81
   },
@@ -839,7 +839,7 @@ export const VILLAGE_SEED = [
     "matchPattern": "water club",
     "villageName": "Water Club",
     "villageSortHelp": "Water Club",
-    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/water-club",
+    "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-water-club",
     "village1": "f87c271c-63a1-4fb8-89fd-2dc3f452a6b9",
     "order": 105
   },
