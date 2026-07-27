@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Verify the live site serves every URL recorded in a NeighborhoodsCondos export.
 
-Usage: python3 check-live-urls.py <export.csv>
+Usage: python3 check-live-urls.py <export.csv | url-list.txt>
 
-Checks, with 8 concurrent requests (stdlib only, no pip installs needed):
+Pass either a collection export CSV or a plain text file with one URL per
+line (see audit/live-urls.txt for a pre-built list). Checks, with 8
+concurrent requests (stdlib only, no pip installs needed):
   - every 'Neighborhood Pages Main' URL returns 200
   - every 'Neighborhood Homes for Sale Pages' URL returns 200
   - every 'Nearby Neighborhood N Link' returns 200
@@ -45,24 +47,27 @@ def fetch(url, follow=True):
         return 0, str(e)
 
 
-def main(csv_path):
-    with open(csv_path, encoding='utf-8-sig', newline='') as f:
-        rows = list(csv.DictReader(f))
+def main(src_path):
+    if src_path.endswith('.txt'):
+        with open(src_path, encoding='utf-8') as f:
+            urls = {u.strip(): 'from url list' for u in f if u.strip()}
+    else:
+        with open(src_path, encoding='utf-8-sig', newline='') as f:
+            rows = list(csv.DictReader(f))
+        urls = {}
+        for r in rows:
+            name = r['Neighborhood Name']
+            for col, kind in (('Neighborhood Pages Main', 'main page'),
+                              ('Neighborhood Homes for Sale Pages', 'homes-for-sale page')):
+                path = r[col].strip()
+                if path:
+                    urls.setdefault(BASE + path, f'{name} {kind}')
+            for n in '1234':
+                link = r[f'Nearby Neighborhood {n} Link'].strip()
+                if link:
+                    urls.setdefault(link, f'{name} nearby link {n}')
 
-    urls = {}
-    for r in rows:
-        name = r['Neighborhood Name']
-        for col, kind in (('Neighborhood Pages Main', 'main page'),
-                          ('Neighborhood Homes for Sale Pages', 'homes-for-sale page')):
-            path = r[col].strip()
-            if path:
-                urls.setdefault(BASE + path, f'{name} {kind}')
-        for n in '1234':
-            link = r[f'Nearby Neighborhood {n} Link'].strip()
-            if link:
-                urls.setdefault(link, f'{name} nearby link {n}')
-
-    print(f'checking {len(urls)} unique urls from {len(rows)} rows...')
+    print(f'checking {len(urls)} unique urls...')
     failures = []
     with ThreadPoolExecutor(max_workers=8) as pool:
         for url, (status, _) in zip(urls, pool.map(fetch, urls)):
