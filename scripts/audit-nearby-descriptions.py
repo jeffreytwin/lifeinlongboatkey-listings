@@ -3,7 +3,7 @@
 'Nearby Neighborhood N - Description' equals the referenced neighborhood's
 'Neighborhood Short Description' (field key: villageShortDescription).
 
-Usage: python3 audit-nearby-descriptions.py <export.csv> <output.xlsx>
+Usage: python3 audit-nearby-descriptions.py <export.csv> <output.xlsx> [import.csv]
 
 Input is the CSV exported from the Wix content manager. Output is an .xlsx with:
   - 'Paste into Wix'  : all rows in export order with corrected descriptions
@@ -11,6 +11,11 @@ Input is the CSV exported from the Wix content manager. Output is an .xlsx with:
   - 'Changed Cells'   : only the slots whose description changed, old vs new
   - 'Link Issues'     : nearby links whose slug doesn't match the referenced
                         neighborhood's current page slug
+
+If [import.csv] is given, also writes a Wix-importable CSV: a byte-faithful
+copy of the export (same columns, same row order, utf-8 BOM) with only the
+nearby-neighborhood description cells synced and the flagged links corrected,
+so importing it back updates existing items by ID.
 """
 import csv
 import re
@@ -61,7 +66,35 @@ def build_resolver(rows):
     return resolve
 
 
-def main(csv_path, out_path):
+def write_import_csv(csv_path, rows, resolve, import_path):
+    """Copy the export verbatim, changing only stale descriptions and bad links."""
+    with open(csv_path, encoding='utf-8-sig', newline='') as f:
+        fieldnames = csv.DictReader(f).fieldnames
+    desc_edits = link_edits = 0
+    with open(import_path, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in rows:
+            out = dict(r)
+            for i in SLOTS:
+                title = r[f'Nearby Neighborhood {i} - Title'].strip()
+                link = r[f'Nearby Neighborhood {i} Link'].strip()
+                ref, how = resolve(title, link)
+                if ref is None:
+                    continue
+                new = ref['Neighborhood Short Description'].strip()
+                if r[f'Nearby Neighborhood {i} - Description'].strip() != new:
+                    out[f'Nearby Neighborhood {i} - Description'] = new
+                    desc_edits += 1
+                if how != 'exact link':
+                    out[f'Nearby Neighborhood {i} Link'] = (
+                        'https://www.lifeinlongboatkey.com' + ref['Neighborhood Pages Main'])
+                    link_edits += 1
+            w.writerow(out)
+    print(f'import csv: desc_edits={desc_edits} link_edits={link_edits} -> {import_path}')
+
+
+def main(csv_path, out_path, import_path=None):
     with open(csv_path, encoding='utf-8-sig', newline='') as f:
         rows = list(csv.DictReader(f))
     resolve = build_resolver(rows)
@@ -146,6 +179,9 @@ def main(csv_path, out_path):
     wb.save(out_path)
     print(f'rows={len(rows)} changed={len(changes)} link_issues={len(issues)} -> {out_path}')
 
+    if import_path:
+        write_import_csv(csv_path, rows, resolve, import_path)
+
 
 if __name__ == '__main__':
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
