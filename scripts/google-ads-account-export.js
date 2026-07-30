@@ -114,19 +114,38 @@ function exportAdGroups(sheet) {
         ['Campaign', 'Ad group', 'Status', 'Labels', 'Max CPC'].concat(STATS_HEADER), rows);
 }
 
+function assetTexts(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        out.push(item && item.getText ? item.getText() : String(item));
+    }
+    return out.join(' | ');
+}
+
 function exportAds(sheet) {
     var rows = [];
     var it = AdsApp.ads().withCondition('Status IN [ENABLED, PAUSED]').get();
     while (it.hasNext()) {
         var a = it.next();
-        var type = '', approval = '';
+        var type = '', approval = '', finalUrl = '', headlines = '', descriptions = '';
         try { type = a.getType(); } catch (e) { }
         try { approval = a.getPolicyApprovalStatus(); } catch (e) { }
+        try { finalUrl = a.urls().getFinalUrl() || ''; } catch (e) { }
+        // Full RSA copy, so policy flags can be diffed against clean ads to
+        // find the common trigger phrase.
+        try {
+            var rsa = a.asType().responsiveSearchAd();
+            headlines = assetTexts(rsa.getHeadlines());
+            descriptions = assetTexts(rsa.getDescriptions());
+        } catch (e) { }
         rows.push([a.getAdGroup().getCampaign().getName(), a.getAdGroup().getName(),
-            type, statusOf(a), approval].concat(statsCols(a)));
+            type, statusOf(a), approval, finalUrl, headlines, descriptions]
+            .concat(statsCols(a)));
     }
     writeRows(sheet,
-        ['Campaign', 'Ad group', 'Type', 'Status', 'Approval'].concat(STATS_HEADER), rows);
+        ['Campaign', 'Ad group', 'Type', 'Status', 'Approval', 'Final URL', 'Headlines', 'Descriptions']
+            .concat(STATS_HEADER), rows);
 }
 
 function exportKeywords(sheet) {
