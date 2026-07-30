@@ -71,6 +71,33 @@ What didn't:
 
 Conclusion: only the code changed. The remaining fix is the editor setting.
 
+## Round 3: after setting #dataset2 to 9 items (revision 757, logged out) - RESOLVED
+
+The editor change landed and fixed it. From the live source:
+
+- Page structure file moved from `d0be81_..._747.json` to `d0be81_..._757.json` -
+  proof the Amenities page itself was finally edited (the dataset setting
+  lives in that file).
+- `renderBodyTime: 2040` - server render dropped from ~4.7s to ~2.0s, well
+  inside Wix's SSR budget.
+- `window.clientSideRender = false` - SSR completed; no more blank shell.
+- `<title>Amenities | Life in Longboat Key</title>` plus full meta / OG /
+  Twitter / canonical tags are back in the head (SEO restored).
+- `<div id="SITE_CONTAINER">` ships fully rendered: header, nav, hero,
+  filters, and exactly **9** community panels (Aquarius Club through Bayview
+  Estates) with lazy-loaded LQIP thumbnails, plus the "load more" button.
+- `wix-warmup-data` is populated with `"datasetSize":{"total":105,"loaded":9}` -
+  the dataset now serves 9 of 105 items on first load instead of all 105.
+- `cacheExclusionReason` is empty and `bodyCacheable = true` - successful
+  renders are now cacheable, so repeat visitors get near-instant TTFB.
+
+Chain, fixed: light SSR (2.0s) -> render completes -> real HTML with content
+-> browser hydrates instead of rebuilding -> fast first paint.
+
+Remaining validation: re-run the speed test (incognito). Expect TTFB roughly
+2s or less on a cache miss (much less on a hit), FCP in the 2-4s range, and
+initial requests / page weight sharply down (9 thumbnails instead of 105).
+
 ## Checklist to fix and verify
 
 1. Editor -> Amenities page -> `#dataset2` settings -> **Number of items to
