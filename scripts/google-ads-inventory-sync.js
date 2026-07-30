@@ -50,6 +50,7 @@ function main() {
         dryRun: DRY_RUN,
         feedGeneratedAt: feed.generatedAt,
         matched: 0,
+        matchedPairs: [],
         paused: [],
         enabled: [],
         labelOnlyFixes: [],
@@ -79,6 +80,11 @@ function main() {
         }
         summary.matched++;
         matchedVillages[community.villageName] = true;
+        // Every pairing is logged so mappings can be eyeballed before going
+        // live - ad group names are not expected to match community names
+        // exactly.
+        summary.matchedPairs.push(adGroup.getName() + ' -> ' + community.villageName +
+            ' (' + community.activeListingCount + ' listings, advertise: ' + community.advertise + ')');
 
         var paused = adGroup.isPaused();
         var scriptPaused = hasLabel(adGroup, PAUSED_LABEL);
