@@ -837,8 +837,8 @@ export const VILLAGE_SEED = [
   },
   {
     "matchPattern": "water club",
-    "villageName": "Water Club",
-    "villageSortHelp": "Water Club",
+    "villageName": "The Water Club",
+    "villageSortHelp": "The Water Club",
     "villageURL": "https://www.lifeinlongboatkey.com/neighborhood/the-water-club",
     "village1": "f87c271c-63a1-4fb8-89fd-2dc3f452a6b9",
     "order": 105

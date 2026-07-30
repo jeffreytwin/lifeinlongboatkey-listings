@@ -112,7 +112,7 @@ const OFFICIAL = {
   'c92a6bc1-a2f7-4df5-ae83-5e46e18cda2f': ['Veinte', 'veinte'],
   '5c2a206e-68a1-4b4b-8ddf-f3bbf4494b54': ['Villa di Lancia', 'villa-di-lancia'],
   '0b9db51f-91da-42a6-9435-03797d9305c4': ['Vizcaya', 'vizcaya'],
-  'f87c271c-63a1-4fb8-89fd-2dc3f452a6b9': ['Water Club', 'the-water-club'],
+  'f87c271c-63a1-4fb8-89fd-2dc3f452a6b9': ['The Water Club', 'the-water-club'],
   '37f82a06-77fe-4ba5-81ee-b826822cb794': ['Westchester', 'westchester'],
   'c64ba845-05e9-4958-bde4-80b6c4e2e721': ['Weston Pointe (Bay Isles)', 'weston-pointe-bay-isles'],
   'c0482a6c-0433-4388-b91e-0e89ce50d370': ['Whitney Beach', 'whitney-beach'],
