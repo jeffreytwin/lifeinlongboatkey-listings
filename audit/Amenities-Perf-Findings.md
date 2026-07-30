@@ -45,6 +45,32 @@ published**. The two remaining suspects are outside the code:
    above 9, SSR renders a panel (and queues an image) for every community -
    easily 4-5s of server render and most of the 2MB / 204 requests.
 
+## Round 2: after publishing the optimized code (revision 756, logged out)
+
+What changed:
+
+- The new page code is live (the Velo grid app id changed with the publish)
+  and the test was logged out, so `cacheExclusionReason` is now empty and
+  `bodyCacheable = true` - once SSR succeeds, Wix can cache the rendered
+  HTML and TTFB collapses for later visitors.
+
+What didn't:
+
+- Still `window.clientSideRender = true`, empty `SITE_CONTAINER`, no
+  `<title>`: SSR still gives up and ships the blank shell.
+- `renderBodyTime: 4736` vs `4696` before - virtually identical across two
+  completely different code versions (one that fetched whole collections in
+  onReady, one that does zero data work during SSR). That means SSR is
+  hitting a fixed time budget on **page content**, not page code.
+- The smoking gun: the Amenities page structure file is still
+  `d0be81_..._747.json` while the master page moved to `_755`. The page
+  itself hasn't been edited since revision 747. The dataset's "Number of
+  items to display" is an editor setting stored in that page file - so it is
+  still the old (high) value, and the server is still rendering a panel for
+  every community.
+
+Conclusion: only the code changed. The remaining fix is the editor setting.
+
 ## Checklist to fix and verify
 
 1. Editor -> Amenities page -> `#dataset2` settings -> **Number of items to
