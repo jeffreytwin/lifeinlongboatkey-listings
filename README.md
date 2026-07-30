@@ -74,6 +74,7 @@ Add via Wix Dashboard -> Settings -> Secrets Manager:
 
 - `MLSGRID_API_KEY` - Bearer token for `https://api.mlsgrid.com/v2/`. Rotate the old hardcoded key after cutover.
 - `SYNC_TRIGGER_SECRET` - shared secret for the `/_functions/runSync` HTTP route. Only needed for external callers; the dashboard page calls `runSync()` directly via a backend import and doesn't use this.
+- `ADS_FEED_SECRET` - read-only secret for `GET /_functions/adsInventoryFeed`. It gets embedded in the Google Ads Script, so it must be a separate value from `SYNC_TRIGGER_SECRET` - rotating it never touches the mutating sync routes, and a script holding a stale value just gets 403 and aborts harmlessly.
 
 ## Deployment / rollout
 
@@ -133,6 +134,24 @@ The response re-runs every staged subdivision through the live `Villages` matche
 - `villageNameMismatches` - informational; renames/merges between the legacy and current village lists.
 
 The endpoint is read-only. Legacy-staged rows sit inert in `Stagging` (the drain skips them because their galleries hold raw MLS media objects, not upload items), but they still cost the hourly drain a wasted fan-out wave - bulk-delete the Redfin rows from `Stagging` when the audit is done.
+
+## Google Ads inventory automation
+
+Community ad groups in Google Ads pause automatically when their community runs out of inventory, and re-enable when inventory returns.
+
+**Site side** (runs by itself once deployed):
+
+- The hourly village stats write two extra fields onto `HousesforSale-DynamicPages`: `activeListingCount` (Number - published listings only, since that's what an ad click can actually see) and `zeroSince` (Date & Time - stamped when the count hits 0, cleared when it recovers). Create both fields in the CMS before deploying.
+- `GET /_functions/adsInventoryFeed` (header `x-ads-feed-secret: $ADS_FEED_SECRET`) returns one entry per community: `villageName`, `villageUrl`, `activeListingCount`, `zeroSince`, and `advertise`. `advertise` flips to `false` only after a community has sat at zero for `PAUSE_AFTER_HOURS` (6h, set in `backend/sync/ads-feed.jsw`); anything ambiguous fails open to `true` and is listed under `anomalies`.
+
+**Google Ads side** (`scripts/google-ads-inventory-sync.js` - reference copy; runs inside Google Ads):
+
+1. In Google Ads, apply a label `auto-inventory` to each community ad group the script may manage. Unlabeled ad groups are never touched.
+2. Tools & Settings > Bulk Actions > Scripts > new script; paste the file; fill in `FEED_SECRET`; authorize.
+3. Preview with `DRY_RUN = true` (the default). The log shows planned pauses/enables, `unmatchedAdGroups` (fix via ad-group renames or `NAME_OVERRIDES`), and `communitiesWithoutAdGroups` (informational - communities you could be advertising).
+4. When the preview looks right, set `DRY_RUN = false`, run once manually, then schedule Hourly.
+
+Label contract: the script pauses with its own label `Paused: no inventory` and only ever enables ad groups carrying it - a human-paused ad group stays paused. To opt an ad group out entirely, remove `auto-inventory`. Guardrails: the script aborts with zero changes on any feed failure, a too-small feed, or a run that would pause more than half the managed ad groups. Worst-case latency: a returning listing can take ~3-4h to re-enable ads (media re-host -> promotion -> hourly stats -> hourly script).
 
 ## Verification checklist
 

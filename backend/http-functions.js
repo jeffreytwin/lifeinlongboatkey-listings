@@ -8,6 +8,7 @@ import { seedVillages } from 'backend/sync/seed';
 import { reclassifyHousesforSaleByVillage, reclassifyAllHousesforSale, refreshListings } from 'backend/sync/run';
 import { refreshVillageActiveRanges } from 'backend/sync/village-stats';
 import { compareStagingVsLive } from 'backend/sync/compare';
+import { buildAdsInventoryFeed } from 'backend/sync/ads-feed';
 
 const CHAIN_DEADLINE_MS = 50 * 1000;
 
@@ -15,6 +16,19 @@ async function authorized(request) {
     try {
         const expected = await getSecret('SYNC_TRIGGER_SECRET');
         const provided = request.headers['x-sync-secret'] || request.headers['X-Sync-Secret'];
+        return Boolean(expected) && provided === expected;
+    } catch (err) {
+        return false;
+    }
+}
+
+// Separate credential for the read-only ads inventory feed. It gets embedded
+// in the Google Ads Script, so it must never be (or accept) the mutating
+// SYNC_TRIGGER_SECRET - rotating one never risks the other.
+async function authorizedAdsFeed(request) {
+    try {
+        const expected = await getSecret('ADS_FEED_SECRET');
+        const provided = request.headers['x-ads-feed-secret'] || request.headers['X-Ads-Feed-Secret'];
         return Boolean(expected) && provided === expected;
     } catch (err) {
         return false;
@@ -128,6 +142,20 @@ export async function post_refreshVillageRanges(request) {
     if (!(await authorized(request))) return forbidden({ body: 'forbidden' });
     try {
         const result = await refreshVillageActiveRanges(Date.now() + CHAIN_DEADLINE_MS);
+        return jsonResponse(200, result);
+    } catch (err) {
+        return serverError({ body: err && err.message ? err.message : String(err) });
+    }
+}
+
+// Read-only per-community inventory feed for the Google Ads pause/enable
+// script (scripts/google-ads-inventory-sync.js). Authenticated with
+// ADS_FEED_SECRET, not the sync secret. See README "Google Ads inventory
+// automation".
+export async function get_adsInventoryFeed(request) {
+    if (!(await authorizedAdsFeed(request))) return forbidden({ body: 'forbidden' });
+    try {
+        const result = await buildAdsInventoryFeed();
         return jsonResponse(200, result);
     } catch (err) {
         return serverError({ body: err && err.message ? err.message : String(err) });
