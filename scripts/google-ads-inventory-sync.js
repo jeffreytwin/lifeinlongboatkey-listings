@@ -39,8 +39,9 @@ var MAX_PAUSE_FRACTION = 0.5;    // abort if a run would pause more than this sh
 var MIN_FEED_COMMUNITIES = 50;   // abort if the feed returns fewer communities (expect ~111)
 var NAME_OVERRIDES = {
     // normalized ad group name -> exact feed villageName, for names that
-    // normalization alone can't reconcile. Example:
-    // 'lambiance': "L'Ambiance"
+    // normalization alone can't reconcile.
+    'sabal cove': 'Sabal Cove (Bay Isles)',
+    'the water club': 'Water Club'
 };
 
 function main() {
