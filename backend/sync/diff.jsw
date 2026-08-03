@@ -44,6 +44,12 @@ function hasMeaningfulChange(existing, incoming) {
     // when price/status/timestamp are unchanged, since propertyAddress is the
     // dynamic page URL key and must be unique.
     if (existing.propertyAddress !== incoming.propertyAddress) return true;
+    // Self-heal: rows written before the land bed/bath zero-defaults
+    // (2026-07) carry blank bedrooms/bathrooms even though the transform
+    // now emits explicit zeros. Once every stale row has been rewritten by
+    // a full pass, these never fire again.
+    if (existing.bedrooms == null && incoming.bedrooms != null) return true;
+    if (existing.bathrooms == null && incoming.bathrooms != null) return true;
     const a = existing.modificationTimestamp ? new Date(existing.modificationTimestamp).getTime() : 0;
     const b = incoming.modificationTimestamp ? new Date(incoming.modificationTimestamp).getTime() : 0;
     return b > a;
