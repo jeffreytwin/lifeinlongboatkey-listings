@@ -86,8 +86,9 @@ $w.onReady(function () {
 
 // ---------------------------------------------------------------------------
 // Land listings: vacant land has no bed/bath/living-area stats, so the strip
-// shows blanks and zeros. When homeType is 'Land', #text118 becomes the
-// single 'Land' label and the remaining stat texts and divider lines hide.
+// shows blanks and zeros. When homeType is 'Land', the stat texts and divider
+// lines hide. #text118 is form-factor dependent: on mobile it stays visible
+// as the single 'Land' label; on desktop (and tablet) it hides with the rest.
 // hide() keeps each element's space so the strip's layout doesn't shift;
 // swap in .collapse() as well if you'd rather the gap close up.
 // ---------------------------------------------------------------------------
@@ -96,7 +97,11 @@ function updateLandDisplay(currentItem) {
     if (String(currentItem.homeType || '').trim().toLowerCase() !== 'land') return;
 
     try {
-        $w('#text118').text = 'Land';
+        if (wixWindow.formFactor === 'Mobile') {
+            $w('#text118').text = 'Land';
+        } else {
+            $w('#text118').hide();
+        }
     } catch (err) {
         console.error('Land label update failed for #text118:', err);
     }
