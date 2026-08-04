@@ -45,6 +45,74 @@ published**. The two remaining suspects are outside the code:
    above 9, SSR renders a panel (and queues an image) for every community -
    easily 4-5s of server render and most of the 2MB / 204 requests.
 
+## Round 2: after publishing the optimized code (revision 756, logged out)
+
+What changed:
+
+- The new page code is live (the Velo grid app id changed with the publish)
+  and the test was logged out, so `cacheExclusionReason` is now empty and
+  `bodyCacheable = true` - once SSR succeeds, Wix can cache the rendered
+  HTML and TTFB collapses for later visitors.
+
+What didn't:
+
+- Still `window.clientSideRender = true`, empty `SITE_CONTAINER`, no
+  `<title>`: SSR still gives up and ships the blank shell.
+- `renderBodyTime: 4736` vs `4696` before - virtually identical across two
+  completely different code versions (one that fetched whole collections in
+  onReady, one that does zero data work during SSR). That means SSR is
+  hitting a fixed time budget on **page content**, not page code.
+- The smoking gun: the Amenities page structure file is still
+  `d0be81_..._747.json` while the master page moved to `_755`. The page
+  itself hasn't been edited since revision 747. The dataset's "Number of
+  items to display" is an editor setting stored in that page file - so it is
+  still the old (high) value, and the server is still rendering a panel for
+  every community.
+
+Conclusion: only the code changed. The remaining fix is the editor setting.
+
+## Round 3: after setting #dataset2 to 9 items (revision 757, logged out) - RESOLVED
+
+The editor change landed and fixed it. From the live source:
+
+- Page structure file moved from `d0be81_..._747.json` to `d0be81_..._757.json` -
+  proof the Amenities page itself was finally edited (the dataset setting
+  lives in that file).
+- `renderBodyTime: 2040` - server render dropped from ~4.7s to ~2.0s, well
+  inside Wix's SSR budget.
+- `window.clientSideRender = false` - SSR completed; no more blank shell.
+- `<title>Amenities | Life in Longboat Key</title>` plus full meta / OG /
+  Twitter / canonical tags are back in the head (SEO restored).
+- `<div id="SITE_CONTAINER">` ships fully rendered: header, nav, hero,
+  filters, and exactly **9** community panels (Aquarius Club through Bayview
+  Estates) with lazy-loaded LQIP thumbnails, plus the "load more" button.
+- `wix-warmup-data` is populated with `"datasetSize":{"total":105,"loaded":9}` -
+  the dataset now serves 9 of 105 items on first load instead of all 105.
+- `cacheExclusionReason` is empty and `bodyCacheable = true` - successful
+  renders are now cacheable, so repeat visitors get near-instant TTFB.
+
+Chain, fixed: light SSR (2.0s) -> render completes -> real HTML with content
+-> browser hydrates instead of rebuilding -> fast first paint.
+
+Remaining validation: re-run the speed test (incognito). Expect TTFB roughly
+2s or less on a cache miss (much less on a hit), FCP in the 2-4s range, and
+initial requests / page weight sharply down (9 thumbnails instead of 105).
+
+## Final speed test (GTmetrix, 2026-07-30, Seattle / Chrome 142 / Lighthouse 12.6.1)
+
+| metric | before (2026-07-30) | after |
+| --- | --- | --- |
+| GTmetrix grade | - | **A** (Performance 92%, Structure 95%) |
+| Contentful paint | FCP 16.584s | **LCP 912ms** |
+| Total Blocking Time | - | 218ms |
+| Cumulative Layout Shift | 0 | 0 |
+
+The page's largest content element now paints in under a second - roughly an
+18x improvement over the original 16.6s first paint. The render beat even
+the 2-4s expectation because Wix served the now-cacheable SSR HTML from its
+cache (no server render on the request at all), which is the steady state
+most visitors will hit. Case closed.
+
 ## Checklist to fix and verify
 
 1. Editor -> Amenities page -> `#dataset2` settings -> **Number of items to
