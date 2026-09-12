@@ -2,6 +2,8 @@ import wixData from 'wix-data';
 import { mediaManager } from 'wix-media-backend';
 import { fetch } from 'wix-fetch';
 import { getSecret } from 'wix-secrets-backend';
+import { logEvent } from 'backend/sync/events.js';
+import { SITE_URL } from 'backend/sync/site-config.js';
 const dataURLdecoder = require('image-data-uri');
 
 const COLLECTION = 'HousesforSale';
@@ -18,7 +20,6 @@ const FLUSH_EVERY = 5;
 // already a 10x throughput improvement over the old serial loop.
 const PARALLEL_UPLOADS = 10;
 
-const SITE_URL = 'https://www.lifeinlongboatkey.com';
 const CHAIN_ENDPOINT = `${SITE_URL}/_functions/drainMedia`;
 // 5s gives Wix enough time to dispatch the request and receive an initial
 // HTTP ack from the chain endpoint before the parent function is terminated.
@@ -99,7 +100,7 @@ function isGalleryComplete(gallery) {
 // the row is flushed after each batch so progress is durable even if Wix
 // kills the function mid-loop. Loops across rows until the deadline is
 // reached or no pending media remain.
-export async function processMediaQueueStep(deadline) {
+export async function processMediaQueueStep(deadline, runKey) {
     const effectiveDeadline = deadline || (Date.now() + DEFAULT_DEADLINE_MS);
     let totalProcessed = 0;
     let totalFailed = 0;
@@ -123,6 +124,7 @@ export async function processMediaQueueStep(deadline) {
         }
 
         let rowProcessed = 0;
+        let firstError = null;
         for (let b = 0; b < pendingIdxs.length && Date.now() < effectiveDeadline; b += PARALLEL_UPLOADS) {
             const batch = pendingIdxs.slice(b, b + PARALLEL_UPLOADS);
             const results = await Promise.all(batch.map(async (idx) => {
@@ -133,6 +135,7 @@ export async function processMediaQueueStep(deadline) {
                     return { idx, wixUrl, mlsUrl, ok: true };
                 } catch (err) {
                     console.log('processMediaQueueStep upload failed', mlsUrl, err && err.message);
+                    if (!firstError) firstError = err && err.message ? err.message : String(err);
                     return { idx, ok: false };
                 }
             }));
@@ -146,6 +149,23 @@ export async function processMediaQueueStep(deadline) {
                 }
             }
             await flushGallery(target, gallery);
+        }
+        // Throttled failure event (this queue is also driven by the
+        // per-minute cron): first failure, then at most once an hour per row.
+        const rowFailed = pendingIdxs.length - rowProcessed;
+        if (rowFailed > 0 && rowProcessed === 0) {
+            const last = target.lastPhotoFailAt ? new Date(target.lastPhotoFailAt).getTime() : 0;
+            if (Date.now() - last > 60 * 60 * 1000) {
+                await logEvent('warn', 'photos_failed', `${rowFailed} of ${pendingIdxs.length} pending photo${pendingIdxs.length === 1 ? '' : 's'} failed to upload for live row ${target.propertyAddress || target._id}${firstError ? `: ${firstError}` : ''}`, {
+                    listingId: target._id, address: target.propertyAddress, village: target.village, mode: 'media', runKey: runKey || null,
+                    details: { failed: rowFailed, processed: rowProcessed, pending: pendingIdxs.length, firstError: firstError || null }
+                });
+                try {
+                    await wixData.update(COLLECTION, { ...target, listingImageGallery: gallery, lastPhotoFailAt: new Date() }, { suppressAuth: true });
+                } catch (err) {
+                    console.log('lastPhotoFailAt write failed for', target._id, err && err.message);
+                }
+            }
         }
         if (rowProcessed === 0) stuck.add(target._id);
     }

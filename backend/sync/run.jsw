@@ -6,6 +6,9 @@ import { processMediaQueueStep, triggerMediaDrain, trashMedia } from 'backend/sy
 import { drainStaggingFanOut, countPendingStagging, processOneStaggingRow } from 'backend/sync/stagging';
 import { refreshVillageActiveRanges } from 'backend/sync/village-stats';
 import { BOOTSTRAP_IDS } from 'backend/sync/bootstrap-ids';
+import { purgeOld } from 'backend/sync/retention.js';
+import { buildHealthReport, queryEvents } from 'backend/sync/health.js';
+import { logEvent } from 'backend/sync/events.js';
 
 const COLLECTION = 'HousesforSale';
 
@@ -16,11 +19,42 @@ const DEFAULT_TEST_LISTING_ID = 'A4672059';
 const TEST_PANEL_DEADLINE_MS = 50 * 1000;
 
 export function hourlyIncremental() {
-    return runSync('incremental');
+    return runSync('incremental', { trigger: 'cron' });
 }
 
 export function nightlyFull() {
-    return runSync('full');
+    return runSync('full', { trigger: 'cron' });
+}
+
+// Nightly (04:00 UTC, an hour after the reconcile): retention purge of the
+// audit collections (SyncRuns / SyncEvents). Its own cron entry so it has
+// its own invocation budget and cannot crowd the reconcile's run record.
+// Chunked and deadline-bounded; anything it can't finish tonight it
+// finishes tomorrow.
+export function nightlyPurge() {
+    return purgeOld(Date.now() + TEST_PANEL_DEADLINE_MS);
+}
+
+// Manual retention purge (test panel / POST /_functions/purgeOld).
+export async function purgeOldAudit() {
+    return purgeOld(Date.now() + TEST_PANEL_DEADLINE_MS);
+}
+
+// Same JSON the ops app polls at GET /_functions/listingsHealth, for the
+// test panel.
+export async function healthReport() {
+    return buildHealthReport({});
+}
+
+// One listing's whole event history (newest first), for the test panel.
+export async function listingTimeline(listingId, limit) {
+    if (!listingId) return { error: 'listingId required' };
+    return queryEvents({ listingId: String(listingId), limit: limit || 100 });
+}
+
+// Recent events at or above a level (default warn), for the test panel.
+export async function recentEvents(level, limit) {
+    return queryEvents({ level: level || 'warn', limit: limit || 50 });
 }
 
 // Hourly cron: drain Stagging via parallel HTTP fan-out. Each fanned-out call
@@ -155,6 +189,10 @@ export async function refreshListings(ids) {
                 : [];
             if (wixSrcs.length) await trashMedia(wixSrcs);
             await wixData.remove(COLLECTION, storedId, { suppressAuth: true }).catch(() => null);
+            await logEvent('info', 'delete', `Removed ${existing.propertyAddress || storedId} for a forced photo rebuild (refreshListings); it re-stages now and publishes when its photos finish`, {
+                listingId: storedId, address: existing.propertyAddress, village: existing.village, mode: 'manual',
+                details: { reason: 'forced refresh', reasonCode: 'manual_refresh', trigger: 'refreshListings', photosTrashed: wixSrcs.length, wasLive: true }
+            });
         }
         // Clear any stranded Stagging row so the fresh insert doesn't collide.
         await wixData.remove('Stagging', storedId, { suppressAuth: true }).catch(() => null);
@@ -342,6 +380,10 @@ export async function reclassifyAllHousesforSale() {
                     await wixData.remove(COLLECTION, row._id, { suppressAuth: true });
                     removed += 1;
                     unmatchedSummary.push({ id: row._id, subdivision: row.subdivision, was: row.village });
+                    await logEvent('warn', 'delete', `Removed ${row.propertyAddress || row._id}: subdivision "${row.subdivision || ''}" matches no village after a Villages edit (reclassifyAll)`, {
+                        listingId: row._id, address: row.propertyAddress, village: row.village, mode: 'manual',
+                        details: { reason: `Subdivision "${row.subdivision || ''}" matches no village`, reasonCode: 'no_village', trigger: 'reclassifyAll', previousVillage: row.village, photosTrashed: wixSrcs.length, wasLive: true }
+                    });
                 } catch (err) {
                     console.log('reclassifyAll remove failed for', row._id, err && err.message);
                 }
@@ -455,6 +497,10 @@ export async function reclassifyHousesforSaleByVillage(villageName) {
             await wixData.remove(COLLECTION, row._id, { suppressAuth: true });
             removed += 1;
             removedSummary.push({ id: row._id, subdivision: row.subdivision });
+            await logEvent('warn', 'delete', `Removed ${row.propertyAddress || row._id}: subdivision "${row.subdivision || ''}" matches no village after a Villages edit (reclassifyByVillage ${villageName})`, {
+                listingId: row._id, address: row.propertyAddress, village: row.village, mode: 'manual',
+                details: { reason: `Subdivision "${row.subdivision || ''}" matches no village`, reasonCode: 'no_village', trigger: 'reclassifyByVillage', previousVillage: villageName, photosTrashed: wixSrcs.length, wasLive: true }
+            });
         } catch (err) {
             console.log('reclassify remove failed for', row._id, err && err.message);
         }

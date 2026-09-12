@@ -3,6 +3,8 @@ import { fetch } from 'wix-fetch';
 import { getSecret } from 'wix-secrets-backend';
 import { uploadWithRetry, trashMedia } from 'backend/sync/media';
 import { hydrateListing } from 'backend/sync/mlsgrid';
+import { logEvent } from 'backend/sync/events.js';
+import { SITE_URL } from 'backend/sync/site-config.js';
 
 const STAGGING = 'Stagging';
 const HOUSES = 'HousesforSale';
@@ -10,11 +12,19 @@ const PARALLEL_UPLOADS = 10;
 // Each per-row HTTP call gets its own ~59s Wix budget. Leave headroom for the
 // row read/write that bookend the uploads.
 const PER_ROW_DEADLINE_MS = 50 * 1000;
+// A parent (cron/runSync) awaiting a wave must not be held past its own
+// kill: it passes budgetMs and the child stops CHILD_MARGIN_MS before it.
+const CHILD_MARGIN_MS = 5 * 1000;
+// Don't start a wave with less than this left - a wave can't finish in less.
+const MIN_WAVE_BUDGET_MS = 15 * 1000;
+// Photo-failure events are written on transitions only (first failure,
+// every Nth consecutive failure, error signature change, recovery) so one
+// stuck row cannot flood SyncEvents from the per-minute cron.
+const FAIL_EVENT_EVERY = 10;
 // Cron fan-out: how many per-row HTTP calls to dispatch concurrently. Each is
 // awaited (not fire-and-forget), so dispatch is reliable.
 const FAN_OUT_PARALLEL = 10;
 
-const SITE_URL = 'https://www.lifeinlongboatkey.com';
 const PROCESS_ROW_ENDPOINT = `${SITE_URL}/_functions/processStaggingRow`;
 
 function isPending(item) {
@@ -84,7 +94,10 @@ export async function getPendingStaggingRows(limit) {
 // photos via internal Promise.all parallelism, flush progress between batches
 // for durability, then if the gallery is fully wix-hosted promote the row to
 // HousesforSale and delete it from Stagging.
-export async function processOneStaggingRow(rowId) {
+// runKey (optional): the run whose fan-out dispatched this call, so the
+// events written here join to it. budgetMs (optional): how long the caller
+// can wait; the upload loop stops CHILD_MARGIN_MS before that.
+export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     if (!rowId) return { rowId, status: 'no_id', processed: 0, failed: 0 };
 
     const row = await wixData.get(STAGGING, rowId, { suppressAuth: true }).catch(() => null);
@@ -98,7 +111,13 @@ export async function processOneStaggingRow(rowId) {
 
     let processed = 0;
     let failed = 0;
-    const deadline = Date.now() + PER_ROW_DEADLINE_MS;
+    const failures = []; // { url, error } samples for the event log
+    const budget = typeof budgetMs === 'number' && budgetMs > 0 ? Math.min(PER_ROW_DEADLINE_MS, budgetMs - CHILD_MARGIN_MS) : PER_ROW_DEADLINE_MS;
+    const deadline = Date.now() + Math.max(budget, 1000);
+    const ctx = { listingId: rowId, address: row.propertyAddress, village: row.village, mode: 'drain', runKey: runKey || null };
+    // Failure bookkeeping carried on the row (see FAIL_EVENT_EVERY).
+    let failStreak = typeof row.photoFailStreak === 'number' ? row.photoFailStreak : 0;
+    const prevSignature = row.photoFailSignature || null;
 
     for (let b = 0; b < pendingIdxs.length && Date.now() < deadline; b += PARALLEL_UPLOADS) {
         const batch = pendingIdxs.slice(b, b + PARALLEL_UPLOADS);
@@ -110,6 +129,7 @@ export async function processOneStaggingRow(rowId) {
                 return { idx, wixUrl, mlsUrl, ok: true };
             } catch (err) {
                 console.log('processOneStaggingRow upload failed', mlsUrl, err && err.message);
+                if (failures.length < 5) failures.push({ url: mlsUrl, error: err && err.message ? err.message : String(err) });
                 return { idx, ok: false };
             }
         }));
@@ -129,21 +149,88 @@ export async function processOneStaggingRow(rowId) {
         }
     }
 
+    // Failure state + throttled events. Written with the row's own flush so
+    // no extra write happens on the success path.
+    const signature = failures.length ? String(failures[0].error).slice(0, 120) : null;
+    let failState = null;
+    if (failed > 0 && processed === 0) {
+        failStreak += 1;
+        failState = { photoFailStreak: failStreak, photoFailSignature: signature, lastPhotoFailAt: new Date() };
+        const transition = failStreak === 1 || failStreak % FAIL_EVENT_EVERY === 0 || (signature && signature !== prevSignature);
+        if (transition) {
+            await logEvent('warn', 'photos_failed', `${failed} of ${pendingIdxs.length} pending photo${pendingIdxs.length === 1 ? '' : 's'} failed to upload for ${row.propertyAddress || rowId}${signature ? `: ${signature}` : ''}${failStreak > 1 ? ` (${failStreak} consecutive attempts)` : ''}`, {
+                ...ctx,
+                details: { failed, processed, pending: pendingIdxs.length, galleryTotal: gallery.length, samples: failures, failStreak, stagedSince: row._createdDate || null }
+            });
+        }
+    } else if (failed > 0) {
+        // Partial progress: not a streak, one note the first time only.
+        failState = { photoFailStreak: 0, photoFailSignature: signature, lastPhotoFailAt: new Date() };
+        if (failStreak === 0 && !prevSignature) {
+            await logEvent('warn', 'photos_failed', `${failed} of ${pendingIdxs.length} pending photo${pendingIdxs.length === 1 ? '' : 's'} failed to upload for ${row.propertyAddress || rowId}${signature ? `: ${signature}` : ''}; ${processed} succeeded, the rest will be retried`, {
+                ...ctx,
+                details: { failed, processed, pending: pendingIdxs.length, galleryTotal: gallery.length, samples: failures, stagedSince: row._createdDate || null }
+            });
+        }
+        failStreak = 0;
+    } else if (processed > 0 && (failStreak > 0 || prevSignature)) {
+        failState = { photoFailStreak: 0, photoFailSignature: null, lastPhotoFailAt: row.lastPhotoFailAt || null };
+        await logEvent('info', 'photos_recovered', `Photo uploads recovered for ${row.propertyAddress || rowId} after ${failStreak} failed attempt${failStreak === 1 ? '' : 's'}`, {
+            ...ctx, details: { processed, previousStreak: failStreak, previousError: prevSignature }
+        });
+        failStreak = 0;
+    }
+    if (failState) {
+        Object.assign(row, failState);
+        try {
+            await wixData.update(STAGGING, { ...row, listingImageGallery: gallery }, { suppressAuth: true });
+        } catch (err) {
+            console.log('Stagging fail-state flush failed for', rowId, err && err.message);
+        }
+    }
+
     // Every pending upload failed with zero successes: the stored MLS media
     // URLs are likely stale (MLSGrid rotates/deletes the S3 objects when an
     // agent replaces photos, and the old links die). Re-hydrate the listing
     // for fresh URLs so the next wave can succeed instead of hammering dead
-    // links forever.
+    // links forever - unless the listing has left the market, in which case
+    // drop it (the nightly full also does this, but here we already know).
     if (pendingIdxs.length && processed === 0 && failed > 0) {
         try {
             const raw = await hydrateListing(rowId);
+            const mlsStatus = raw ? (raw.StandardStatus || '') : '';
+            if (raw && mlsStatus && mlsStatus.toLowerCase() !== 'active') {
+                const wixSrcs = gallery.filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http')).map(g => g.src);
+                await wixData.remove(STAGGING, rowId, { suppressAuth: true });
+                if (wixSrcs.length) await trashMedia(wixSrcs);
+                await logEvent('info', 'unstage', `Dropped staged (never published) listing ${row.propertyAddress || rowId}: Status changed to ${mlsStatus} while its photos were still failing`, {
+                    ...ctx,
+                    details: { reason: `Status changed to ${mlsStatus}`, reasonCode: 'status_change', mls: { status: mlsStatus }, photosTrashed: wixSrcs.length, failStreak, stagedSince: row._createdDate || null, wasLive: false }
+                });
+                return { rowId, status: 'unstaged', processed, failed };
+            }
             if (raw && Array.isArray(raw.Media) && raw.Media.length) {
                 const fresh = mergeGalleryLocal(galleryFromMedia(raw.Media), gallery);
                 await wixData.update(STAGGING, { ...row, listingImageGallery: fresh }, { suppressAuth: true });
+                if (failStreak === 1 || failStreak % FAIL_EVENT_EVERY === 0) {
+                    await logEvent('info', 'rehydrate', `Every pending photo failed for ${row.propertyAddress || rowId}; refreshed ${fresh.length} photo URLs from MLSGrid for the next attempt (MLS status ${mlsStatus || 'unknown'})`, {
+                        ...ctx,
+                        details: { photos: fresh.length, mlsStatus: mlsStatus || null, failStreak, stagedSince: row._createdDate || null }
+                    });
+                }
                 return { rowId, status: 'rehydrated', processed, failed };
+            }
+            if (failStreak === 1 || failStreak % FAIL_EVENT_EVERY === 0) {
+                await logEvent('warn', 'rehydrate', `Every pending photo failed for ${row.propertyAddress || rowId} and MLSGrid ${raw ? 'returned no media' : 'no longer returns the listing'}; it will be retried`, {
+                    ...ctx,
+                    details: { mlsFound: !!raw, mlsStatus: mlsStatus || null, failStreak, stagedSince: row._createdDate || null }
+                });
             }
         } catch (err) {
             console.log('processOneStaggingRow rehydrate failed for', rowId, err && err.message);
+            await logEvent('error', 'rehydrate', `Re-fetch from MLSGrid failed for ${row.propertyAddress || rowId}: ${err && err.message ? err.message : err}`, {
+                ...ctx, details: { error: err && err.message ? err.message : String(err), failStreak }
+            });
         }
         return { rowId, status: 'partial', processed, failed };
     }
@@ -156,8 +243,9 @@ export async function processOneStaggingRow(rowId) {
     // Stagging. Upsert in case HousesforSale already has this _id (handles a
     // re-run or update path).
     const firstWix = gallery.find(g => g && g.src && !g.src.startsWith('http'));
+    const { photoFailStreak, photoFailSignature, lastPhotoFailAt, ...cleanRow } = row;
     const houseRecord = {
-        ...row,
+        ...cleanRow,
         listingImageGallery: gallery,
         listingPrimaryImage: firstWix ? firstWix.src : row.listingPrimaryImage,
         isPublished: true
@@ -181,9 +269,18 @@ export async function processOneStaggingRow(rowId) {
             await wixData.insert(HOUSES, houseRecord, { suppressAuth: true });
         }
         await wixData.remove(STAGGING, rowId, { suppressAuth: true });
+        await logEvent('info', 'promote', existing
+            ? `Published photo swap for ${row.propertyAddress || rowId} (${gallery.length} photos live)`
+            : `Published new listing ${row.propertyAddress || rowId} (${row.village || 'no village'}, ${row.listingPrice || 'no price'}, ${gallery.length} photos)`, {
+            ...ctx,
+            details: { photos: gallery.length, uploadedThisCall: processed, wasLive: !!existing, price: row.listingPricePure, stagedSince: row._createdDate || null }
+        });
         return { rowId, status: 'promoted', processed, failed };
     } catch (err) {
         console.log('promotion failed for', rowId, err && err.message);
+        await logEvent('error', 'promote_failed', `Promotion to HousesforSale failed for ${row.propertyAddress || rowId}: ${err && err.message ? err.message : err}`, {
+            ...ctx, details: { error: err && err.message ? err.message : String(err), photos: gallery.length }
+        });
         return { rowId, status: 'promote_failed', processed, failed, error: err && err.message };
     }
 }
@@ -193,26 +290,34 @@ export async function processOneStaggingRow(rowId) {
 // own fresh ~59s Wix invocation budget, so we get real parallelism instead of
 // the single-process budget ceiling. The cron awaits each call (not fire-and-
 // forget), which makes dispatch deterministic.
-export async function drainStaggingFanOut(deadline) {
+export async function drainStaggingFanOut(deadline, runKey) {
     const effectiveDeadline = deadline || (Date.now() + 50 * 1000);
+    const empty = { promoted: 0, partial: 0, processed: 0, failed: 0, httpErrors: 0, stalled: false, waves: 0 };
     let secret;
     try {
         secret = await getSecret('SYNC_TRIGGER_SECRET');
     } catch (err) {
         console.log('drainStaggingFanOut: secret read failed', err && err.message);
-        return { promoted: 0, partial: 0, processed: 0, failed: 0 };
+        return { ...empty, secretMissing: true, secretError: err && err.message ? err.message : String(err) };
     }
     if (!secret) {
         console.log('drainStaggingFanOut: SYNC_TRIGGER_SECRET not set');
-        return { promoted: 0, partial: 0, processed: 0, failed: 0 };
+        return { ...empty, secretMissing: true };
     }
 
     let totalPromoted = 0;
     let totalPartial = 0;
     let totalProcessed = 0;
     let totalFailed = 0;
+    let httpErrors = 0;
+    let waves = 0;
+    let stalled = false;
+    let stalledRows = null;
+    const errorSamples = [];
 
-    while (Date.now() < effectiveDeadline) {
+    // Only start a wave with enough time for it to finish: each child is
+    // told the remaining budget and stops before it.
+    while (effectiveDeadline - Date.now() >= MIN_WAVE_BUDGET_MS) {
         // Each iteration pulls the next FAN_OUT_PARALLEL pending rows and
         // dispatches concurrent per-row HTTP calls. wixData query happens
         // every loop so a row that was promoted by a previous wave isn't
@@ -220,6 +325,8 @@ export async function drainStaggingFanOut(deadline) {
         const pending = await getPendingStaggingRows(FAN_OUT_PARALLEL);
         if (!pending.length) break;
 
+        waves += 1;
+        const budgetMs = effectiveDeadline - Date.now();
         const results = await Promise.all(pending.map(async (row) => {
             try {
                 const r = await fetch(PROCESS_ROW_ENDPOINT, {
@@ -228,7 +335,7 @@ export async function drainStaggingFanOut(deadline) {
                         'Content-Type': 'application/json',
                         'x-sync-secret': secret
                     },
-                    body: JSON.stringify({ rowId: row._id })
+                    body: JSON.stringify({ rowId: row._id, runKey: runKey || null, budgetMs })
                 });
                 if (!r.ok) {
                     const body = await r.text();
@@ -243,17 +350,28 @@ export async function drainStaggingFanOut(deadline) {
         for (const r of results) {
             if (r.status === 'promoted') totalPromoted += 1;
             else if (r.status === 'partial') totalPartial += 1;
+            else if (r.status === 'http_error' || r.status === 'fetch_error') {
+                httpErrors += 1;
+                if (errorSamples.length < 3) errorSamples.push({ rowId: r.rowId, status: r.http || null, error: r.error || r.body || null, endpoint: PROCESS_ROW_ENDPOINT });
+            }
             totalProcessed += (r.processed || 0);
             totalFailed += (r.failed || 0);
         }
 
         // If no progress this wave (all errored or all partial with 0 done),
         // bail out so we don't burn the rest of the budget hammering broken
-        // rows. A rehydrated row counts as progress: its URLs are fresh now,
-        // so the next wave has a real chance of succeeding.
-        const madeProgress = results.some(r => r.status === 'promoted' || r.status === 'rehydrated' || (r.processed || 0) > 0);
-        if (!madeProgress) break;
+        // rows. A rehydrated or unstaged row counts as progress: its URLs
+        // are fresh now (or it is gone), so the next wave can move on.
+        const madeProgress = results.some(r => r.status === 'promoted' || r.status === 'rehydrated' || r.status === 'unstaged' || (r.processed || 0) > 0);
+        if (!madeProgress) {
+            stalled = true;
+            stalledRows = results.map(r => ({ rowId: r.rowId, status: r.status }));
+            break;
+        }
     }
 
-    return { promoted: totalPromoted, partial: totalPartial, processed: totalProcessed, failed: totalFailed };
+    return {
+        promoted: totalPromoted, partial: totalPartial, processed: totalProcessed, failed: totalFailed,
+        httpErrors, errorSamples, stalled, stalledRows, waves
+    };
 }

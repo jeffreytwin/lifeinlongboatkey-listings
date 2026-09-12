@@ -5,12 +5,17 @@ import { planIncremental, planFull } from 'backend/sync/diff';
 import { processMediaQueueStep, trashMedia, triggerMediaDrain } from 'backend/sync/media';
 import { drainStaggingFanOut } from 'backend/sync/stagging';
 import { refreshVillageActiveRanges } from 'backend/sync/village-stats';
+import { buildEventRow, flushEvents, describeError as describeErrorRemote } from 'backend/sync/events.js';
+import { INCREMENTAL_EVERY_MINUTES, RUN_LATE_AFTER_MINUTES } from 'backend/sync/site-config.js';
 
 const COLLECTION = 'HousesforSale';
 const STAGGING = 'Stagging';
 const RUNS = 'SyncRuns';
 const POSTAL_CITY = 'longboat key';
 const SOFT_DEADLINE_MS = 50 * 1000;
+// Reserved at the end of applyWrites so the photo phases stop early enough
+// for the pull-date sweep, stats refresh and run record to complete.
+const DRAIN_TAIL_RESERVE_MS = 10 * 1000;
 
 // What MLSGrid PropertyType values we consider on-site. RESO values:
 //   'Residential'       - for-sale homes, condos, townhouses (yes)
@@ -148,12 +153,94 @@ export function transformListing(data, village) {
     };
 }
 
-async function recordRun(mode, status, counts, errorMessage) {
-    const row = {
+// Event buffer for one runSync invocation. Kept as a closure here (not an
+// exported object from events.js) so no function-carrying object crosses a
+// .jsw boundary. Nothing in it throws; flush returns counts.
+const MAX_EVENT_BUFFER = 1500;
+
+function makeRunKey(mode, startedAt) {
+    return `${mode}:${startedAt.toISOString()}`;
+}
+
+// Plain-data helper; proxied or not, awaiting the result is harmless.
+async function describeError(err) {
+    try {
+        return await describeErrorRemote(err);
+    } catch (e) {
+        return { message: err && err.message ? err.message : String(err) };
+    }
+}
+
+function createRunLog(runKey, mode) {
+    let buffer = [];
+    let warnings = 0;
+    let errors = 0;
+    let infos = 0;
+    let flushed = 0;
+    let failed = 0;
+    let dropped = 0;
+    let droppedNoted = false;
+
+    function push(level, kind, message, fields) {
+        try {
+            if (level === 'warn') warnings += 1;
+            else if (level === 'error') errors += 1;
+            else infos += 1;
+            if (buffer.length >= MAX_EVENT_BUFFER) {
+                dropped += 1;
+                if (!droppedNoted) {
+                    droppedNoted = true;
+                    buffer.push(buildEventRow('warn', 'events_dropped',
+                        `Event buffer cap (${MAX_EVENT_BUFFER}) reached; further events in this run are counted but not stored`, { runKey, mode }));
+                }
+                return;
+            }
+            buffer.push(buildEventRow(level, kind, message, { ...(fields || {}), runKey, mode }));
+        } catch (err) {
+            console.log('run log push failed', err && err.message);
+        }
+    }
+
+    return {
+        runKey,
+        mode,
+        info: (kind, message, fields) => push('info', kind, message, fields),
+        warn: (kind, message, fields) => push('warn', kind, message, fields),
+        error: (kind, message, fields) => push('error', kind, message, fields),
+        counts: () => ({ infos, warnings, errors, flushed, failed, pending: buffer.length, dropped }),
+        async flush() {
+            if (!buffer.length) return 0;
+            const rows = buffer;
+            buffer = [];
+            try {
+                const r = await flushEvents(rows);
+                flushed += (r && r.inserted) || 0;
+                failed += (r && r.failed) || 0;
+                return (r && r.inserted) || 0;
+            } catch (err) {
+                failed += rows.length;
+                console.log('run log flush failed', err && err.message);
+                return 0;
+            }
+        }
+    };
+}
+
+// SyncRuns row lifecycle. The row is inserted at run start (status
+// 'running'), updated at the phase-1 checkpoint, and finalized at the end.
+// A run killed by the Wix invocation timeout therefore still leaves a row
+// with its stage and partial counts, which the health feed reports as
+// RUN_INCOMPLETE - the other half of the "cron never fired" blind spot.
+function runRowFields(mode, status, counts, errorMessage) {
+    const finishedAt = status === 'running' ? null : new Date();
+    return {
+        runKey: counts.runKey || null,
         startedAt: counts.startedAt,
-        finishedAt: new Date(),
+        finishedAt,
+        durationMs: finishedAt && counts.startedAt ? finishedAt.getTime() - new Date(counts.startedAt).getTime() : null,
         mode,
         status,
+        stage: counts.stage || null,
         inserted: counts.inserted || 0,
         updated: counts.updated || 0,
         deleted: counts.deleted || 0,
@@ -164,13 +251,96 @@ async function recordRun(mode, status, counts, errorMessage) {
         datesRefreshed: counts.datesRefreshed || 0,
         mlsGridRequestCount: counts.mlsGridRequestCount || 0,
         mlsGridListingCount: counts.mlsGridListingCount || 0,
+        unstaged: counts.unstaged || 0,
+        listingsChanged: (counts.inserted || 0) + (counts.updated || 0) + (counts.deleted || 0) + (counts.unstaged || 0),
+        trigger: counts.trigger || null,
+        mlsGridItemsFetched: counts.mlsGridItemsFetched || 0,
+        fetchWindowMinutes: typeof counts.fetchWindowMinutes === 'number' ? counts.fetchWindowMinutes : null,
+        deletesSkipped: counts.deletesSkipped || 0,
+        drainErrors: counts.drainErrors || 0,
+        statsRefreshed: !!counts.statsRefreshed,
+        // Observability (see backend/sync/events.js):
+        //   errorStage  - which phase threw (fetch|classify|plan|write|dates|stats)
+        //   errorStack  - first 2000 chars of the stack
+        //   gapMinutes  - minutes since the previous recorded run of any kind
+        //   warnings/errors - SyncEvents rows of that level written by this run
+        //   eventsStored - SyncEvents rows persisted for this run
+        //   writesFailed - listing writes that threw (each also a SyncEvents row)
+        errorStage: counts.errorStage || null,
+        errorStack: counts.errorStack || null,
+        gapMinutes: typeof counts.gapMinutes === 'number' ? counts.gapMinutes : null,
+        warnings: counts.warnings || 0,
+        errors: counts.errors || 0,
+        eventsStored: counts.eventsStored || 0,
+        eventsFailed: counts.eventsFailed || 0,
+        writesFailed: counts.writesFailed || 0,
         errorMessage: errorMessage || null
     };
+}
+
+async function startRunRow(mode, counts) {
     try {
-        await wixData.insert(RUNS, row, { suppressAuth: true });
+        const row = await wixData.insert(RUNS, runRowFields(mode, 'running', counts, null), { suppressAuth: true });
+        return row && row._id ? row._id : null;
+    } catch (err) {
+        console.log('startRunRow failed', err && err.message);
+        return null;
+    }
+}
+
+// Update the run row in place; if there is no row (start insert failed) or
+// the update fails, fall back to inserting so a run never goes unrecorded.
+async function recordRun(mode, status, counts, errorMessage) {
+    const fields = runRowFields(mode, status, counts, errorMessage);
+    if (counts.runRowId) {
+        try {
+            await wixData.update(RUNS, { ...fields, _id: counts.runRowId }, { suppressAuth: true });
+            return;
+        } catch (err) {
+            console.log('recordRun update failed, inserting instead', err && err.message);
+        }
+    }
+    try {
+        const row = await wixData.insert(RUNS, fields, { suppressAuth: true });
+        if (row && row._id) counts.runRowId = row._id;
     } catch (err) {
         console.log('recordRun failed', err && err.message);
     }
+}
+
+// Newest run row of any status/mode, for gap detection.
+async function getPreviousRun() {
+    try {
+        const res = await wixData.query(RUNS).descending('startedAt').limit(1).find({ suppressAuth: true });
+        return res.items.length ? res.items[0] : null;
+    } catch (err) {
+        console.log('getPreviousRun error', err && err.message);
+        return null;
+    }
+}
+
+function formatMinutes(mins) {
+    const m = Math.round(mins);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+}
+
+// A logger that accepts the run-log interface but stores nothing, for
+// callers (bootstrap, tests) that don't run inside runSync.
+function noopLog() {
+    const noop = () => {};
+    return { info: noop, warn: noop, error: noop, counts: () => ({}), flush: async () => 0 };
+}
+
+// Short description of a listing for event messages.
+function describeItem(item) {
+    const parts = [];
+    if (item.village) parts.push(item.village);
+    if (item.listingPrice) parts.push(item.listingPrice);
+    const n = Array.isArray(item.listingImageGallery) ? item.listingImageGallery.length : 0;
+    parts.push(`${n} photo${n === 1 ? '' : 's'}`);
+    return parts.join(', ');
 }
 
 async function getLastSuccessfulRunAt() {
@@ -185,25 +355,70 @@ async function getLastSuccessfulRunAt() {
     return fallback;
 }
 
-async function classify(mlsItems) {
+// Returns { upsertRaw: [{ raw, village }], removals: [{ id, reason, reasonCode, address, mls }] }.
+// Every removal carries a human-readable reason and a stable reasonCode
+// (status_change | property_type | no_village | city_change | mls_revoked)
+// so the write phase can record what got deleted and why.
+//
+// knownIds: ids we hold (HousesforSale, plus live-pipeline Stagging rows). A
+// city change is only a removal for a listing we hold; in incremental mode
+// the feed is MLS-wide and the thousands of non-local records are simply
+// skipped. Without knownIds (bootstrap/tests) city mismatches are skipped.
+async function classify(mlsItems, { knownIds = null } = {}) {
     const upsertRaw = [];
-    const removalIds = [];
+    const removals = [];
+    const removal = (raw, reasonCode, reason) => {
+        let address = null;
+        try { address = buildAddress(raw).propertyAdd; } catch (err) { address = null; }
+        removals.push({
+            id: raw.ListingId,
+            reason,
+            reasonCode,
+            address,
+            mls: {
+                status: raw.StandardStatus || null,
+                subdivision: raw.SubdivisionName || null,
+                city: raw.City || raw.PostalCity || null,
+                propertyType: raw.PropertyType || null,
+                propertySubType: raw.PropertySubType || null,
+                price: typeof raw.ListPrice === 'number' ? raw.ListPrice : null,
+                canView: raw.MlgCanView != null ? raw.MlgCanView : null,
+                modificationTimestamp: raw.ModificationTimestamp || null
+            }
+        });
+    };
     for (const raw of mlsItems) {
         if (!raw || !raw.ListingId) continue;
+
+        // MLSGrid's display-rights flag: false means the MLS has revoked the
+        // right to show this listing, whatever its status.
+        if (raw.MlgCanView === false) {
+            removal(raw, 'mls_revoked', 'MLS revoked display rights for this listing (MlgCanView is false)');
+            continue;
+        }
+
         // mfrmls returns the city as City (matching the old code's data.City
         // usage); PostalCity is empty in this feed. Filter geographically
         // client-side because MLSGrid replication queries don't permit any
         // city/postal field as a server-side filter. Fallback to PostalCity in
         // case other originating systems populate it instead.
-        const city = (raw.City || raw.PostalCity || '').toLowerCase();
-        if (city !== POSTAL_CITY) continue;
+        const cityRaw = raw.City || raw.PostalCity || '';
+        const city = cityRaw.toLowerCase();
+        if (city !== POSTAL_CITY) {
+            if (knownIds && knownIds.has(raw.ListingId)) {
+                removal(raw, 'city_change', cityRaw
+                    ? `City is now "${cityRaw}" (listing moved outside the site's market)`
+                    : 'City is missing from the MLS record (cannot confirm it is in the site\'s market)');
+            }
+            continue;
+        }
 
         const status = (raw.StandardStatus || '').toLowerCase();
         if (status !== 'active') {
             // Status change away from Active (Sold, Pending, Withdrawn, etc.):
             // route to removal so the existing HousesforSale row gets deleted
             // along with its media.
-            removalIds.push(raw.ListingId);
+            removal(raw, 'status_change', `Status changed to ${raw.StandardStatus || 'unknown'}`);
             continue;
         }
 
@@ -214,7 +429,7 @@ async function classify(mlsItems) {
         // cleaned up with its photos.
         const propertyType = (raw.PropertyType || '').toLowerCase();
         if (!ALLOWED_PROPERTY_TYPES.has(propertyType)) {
-            removalIds.push(raw.ListingId);
+            removal(raw, 'property_type', `Property type is ${raw.PropertyType || 'unknown'}${raw.PropertySubType ? ` / ${raw.PropertySubType}` : ''} (not shown on the site)`);
             continue;
         }
 
@@ -227,13 +442,13 @@ async function classify(mlsItems) {
         // already present.
         const village = await matchVillage(raw.SubdivisionName, `${raw.StreetName || ''} ${raw.StreetSuffix || ''}`);
         if (!village) {
-            removalIds.push(raw.ListingId);
+            removal(raw, 'no_village', `Subdivision "${raw.SubdivisionName || ''}" matches no village in the Villages collection`);
             continue;
         }
 
         upsertRaw.push({ raw, village });
     }
-    return { upsertRaw, removalIds };
+    return { upsertRaw, removals };
 }
 
 function sameTimestamp(a, b) {
@@ -292,10 +507,34 @@ function findOrphanedSrcs(prevGallery, nextGallery) {
 //   3) (Legacy) drain any HousesforSale rows with leftover pending photos
 //      via the internal media queue. In steady state this is a no-op
 //      because new rows go through Stagging.
-async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
-    const counts = {
-        inserted: 0, updated: 0, deleted: 0, promoted: 0,
-        imagesUploaded: 0, imagesFailed: 0, imagesTrashed: 0
+// counts: optional pre-made counts object (runSync passes its own so partial
+// counts survive a failure mid-phase). log: optional run log from
+// this file (createRunLog); omitted by bootstrap/test callers.
+// options.checkpoint: async fn called once the row writes are done and
+// their events flushed, before the long photo phases (runSync updates the
+// run row there). options.runKey: threaded into the Stagging fan-out so
+// per-row events join to this run.
+// Delete events that need an operator's eye are warn; routine market
+// movements are info.
+function deleteLevel(reasonCode) {
+    return (reasonCode === 'no_village' || reasonCode === 'not_in_feed' || reasonCode === 'mls_revoked' || reasonCode === 'city_change') ? 'warn' : 'info';
+}
+
+async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline, counts, log, options = {}) {
+    counts = counts || {};
+    for (const k of ['inserted', 'updated', 'deleted', 'unstaged', 'promoted', 'imagesUploaded', 'imagesFailed', 'imagesTrashed', 'writesFailed']) {
+        if (typeof counts[k] !== 'number') counts[k] = 0;
+    }
+    log = log || noopLog();
+    const checkpoint = typeof options.checkpoint === 'function' ? options.checkpoint : async () => {};
+    const runKey = options.runKey || null;
+    const writeFailed = async (what, item, err) => {
+        counts.writesFailed += 1;
+        console.log(`${what} failed for`, item._id, err && err.message);
+        log.error('write_failed', `${what} failed for ${item.propertyAddress || item._id}: ${err && err.message ? err.message : err}`, {
+            listingId: item._id, address: item.propertyAddress, village: item.village,
+            details: { operation: what, error: await describeError(err) }
+        });
     };
 
     for (const item of toInsert) {
@@ -321,8 +560,12 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
             try {
                 await wixData.update(STAGGING, record, { suppressAuth: true });
                 counts.inserted += 1;
+                log.info('insert', `Re-staged new listing ${item.propertyAddress} (${describeItem(record)}); photos still uploading`, {
+                    listingId: item._id, address: item.propertyAddress, village: item.village,
+                    details: { price: item.listingPricePure, photos: merged.length, alreadyStaged: true, stagedSince: existing._createdDate || null }
+                });
             } catch (err) {
-                console.log('Stagging update failed for', item._id, err && err.message);
+                await writeFailed('Stagging update', item, err);
             }
             continue;
         }
@@ -337,15 +580,27 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
         try {
             await wixData.insert(STAGGING, record, { suppressAuth: true });
             counts.inserted += 1;
+            if (!merged.length) {
+                log.warn('insert', `Staged new listing ${item.propertyAddress} with NO photos from MLSGrid; it cannot publish until photos arrive`, {
+                    listingId: item._id, address: item.propertyAddress, village: item.village,
+                    details: { price: item.listingPricePure, photos: 0 }
+                });
+            } else {
+                log.info('insert', `Staged new listing ${item.propertyAddress} (${describeItem(record)}); publishes when photos finish`, {
+                    listingId: item._id, address: item.propertyAddress, village: item.village,
+                    details: { price: item.listingPricePure, photos: merged.length }
+                });
+            }
         } catch (err) {
-            console.log('Stagging insert failed for', item._id, err && err.message);
+            await writeFailed('Stagging insert', item, err);
         }
     }
 
-    for (const { item, prev } of toUpdate) {
+    for (const { item, prev, reasons, fields } of toUpdate) {
         const prevGallery = prev && prev.listingImageGallery;
         const merged = mergeGallery(item.listingImageGallery, prevGallery);
         const wasPublished = !!(prev && prev.isPublished);
+        const why = Array.isArray(reasons) && reasons.length ? reasons.join('; ') : 'changed';
 
         if (isGalleryComplete(merged)) {
             // No photo changes (or the changed photos already migrated):
@@ -360,8 +615,12 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
             try {
                 await wixData.update(COLLECTION, record, { suppressAuth: true });
                 counts.updated += 1;
+                log.info('update', `Updated ${item.propertyAddress}: ${why}`, {
+                    listingId: item._id, address: item.propertyAddress, village: item.village,
+                    details: { reasons, fields, photosStaged: false }
+                });
             } catch (err) {
-                console.log('update failed for', item._id, err && err.message);
+                await writeFailed('update', item, err);
             }
 
             const orphaned = findOrphanedSrcs(prevGallery, merged);
@@ -387,8 +646,23 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
         try {
             await wixData.update(COLLECTION, record, { suppressAuth: true });
             counts.updated += 1;
+            const incomingCount = Array.isArray(item.listingImageGallery) ? item.listingImageGallery.length : 0;
+            if (incomingCount === 0) {
+                // MLSGrid sent no media this fetch. The live row keeps its
+                // gallery; the staged copy below has nothing to upload and
+                // will sit in Stagging until MLSGrid sends photos again.
+                log.warn('update', `Updated ${item.propertyAddress}: ${why}; MLSGrid returned NO photos this fetch, live gallery kept (${(prevGallery || []).length} photos), empty copy staged`, {
+                    listingId: item._id, address: item.propertyAddress, village: item.village,
+                    details: { reasons, fields, photosStaged: true, incomingPhotos: 0, livePhotos: (prevGallery || []).length }
+                });
+            } else {
+                log.info('update', `Updated ${item.propertyAddress}: ${why}; new photos staged, live gallery serving until they finish`, {
+                    listingId: item._id, address: item.propertyAddress, village: item.village,
+                    details: { reasons, fields, photosStaged: true, incomingPhotos: incomingCount, livePhotos: (prevGallery || []).length }
+                });
+            }
         } catch (err) {
-            console.log('update failed for', item._id, err && err.message);
+            await writeFailed('update', item, err);
         }
 
         const existingStag = await wixData.get(STAGGING, item._id, { suppressAuth: true }).catch(() => null);
@@ -407,46 +681,147 @@ async function applyWrites({ toInsert, toUpdate, toDelete }, deadline) {
                 await wixData.insert(STAGGING, stagRecord, { suppressAuth: true });
             }
         } catch (err) {
-            console.log('Stagging stage-for-update failed for', item._id, err && err.message);
+            await writeFailed('Stagging stage-for-update', item, err);
         }
     }
 
-    for (const prev of toDelete) {
+    for (const entry of toDelete) {
+        // planIncremental/planFull emit { prev, removal, reason }; tolerate bare rows.
+        const prev = entry && entry.prev ? entry.prev : entry;
+        const removal = (entry && entry.removal) || { reason: (entry && entry.reason) || 'routed to removal', reasonCode: 'unspecified' };
+        const reason = removal.reason;
         const wixSrcs = galleryWixSrcs(prev.listingImageGallery);
+        let removed = false;
         try {
             await wixData.remove(COLLECTION, prev._id, { suppressAuth: true });
             counts.deleted += 1;
+            removed = true;
         } catch (err) {
-            console.log('remove failed for', prev._id, err && err.message);
+            await writeFailed('remove', prev, err);
         }
-        // Also clear any Stagging twin (a new or update staging round for a
-        // listing that has since left Active) so it can't promote back later.
-        await wixData.remove(STAGGING, prev._id, { suppressAuth: true }).catch(() => null);
+        // Only once the live row is gone: clear any Stagging twin (a new or
+        // update staging round for a listing that has since left Active) so
+        // it can't promote back later, and trash the row's media. If the
+        // remove failed the live row still references its files.
+        if (!removed) continue;
+        const stagTwin = await wixData.remove(STAGGING, prev._id, { suppressAuth: true }).then(() => true).catch(() => false);
         if (wixSrcs.length) {
             await trashMedia(wixSrcs);
             counts.imagesTrashed += wixSrcs.length;
         }
+        log[deleteLevel(removal.reasonCode)]('delete', `Removed ${prev.propertyAddress || prev._id}: ${reason}`, {
+            listingId: prev._id, address: prev.propertyAddress, village: prev.village,
+            details: {
+                reason,
+                reasonCode: removal.reasonCode || 'unspecified',
+                mls: removal.mls || null,
+                price: prev.listingPricePure,
+                village: prev.village,
+                photosTrashed: wixSrcs.length,
+                staggingTwinRemoved: stagTwin,
+                liveSince: prev._createdDate || null,
+                wasLive: true
+            }
+        });
     }
+
+    // Listings that left the market while still in Stagging (never live).
+    for (const entry of (toUnstage || [])) {
+        const prev = entry.prev;
+        const removal = entry.removal || { reason: entry.reason || 'routed to removal', reasonCode: 'unspecified' };
+        const wixSrcs = galleryWixSrcs(prev.listingImageGallery);
+        let removed = false;
+        try {
+            await wixData.remove(STAGGING, prev._id, { suppressAuth: true });
+            counts.unstaged += 1;
+            removed = true;
+        } catch (err) {
+            await writeFailed('Stagging remove', prev, err);
+        }
+        if (!removed) continue;
+        if (wixSrcs.length) {
+            await trashMedia(wixSrcs);
+            counts.imagesTrashed += wixSrcs.length;
+        }
+        log[deleteLevel(removal.reasonCode)]('unstage', `Dropped staged (never published) listing ${prev.propertyAddress || prev._id}: ${removal.reason}`, {
+            listingId: prev._id, address: prev.propertyAddress, village: prev.village,
+            details: {
+                reason: removal.reason,
+                reasonCode: removal.reasonCode || 'unspecified',
+                mls: removal.mls || null,
+                price: prev.listingPricePure,
+                photosTrashed: wixSrcs.length,
+                photosPending: (prev.listingImageGallery || []).filter(g => g && typeof g.src === 'string' && g.src.startsWith('http')).length,
+                stagedSince: prev._createdDate || null,
+                wasLive: false
+            }
+        });
+    }
+
+    // Row writes are done: persist their events and checkpoint the run row
+    // before the long photo phases, so a Wix kill mid-drain loses neither
+    // the insert/update/delete trail nor the counts.
+    await log.flush();
+    try {
+        await checkpoint();
+    } catch (err) {
+        console.log('checkpoint failed', err && err.message);
+    }
+
+    // The photo phases are given a shorter deadline than the run so their
+    // last wave cannot hold the invocation past the hard Wix kill and take
+    // the end-of-run sweeps and the final run record with it. The
+    // per-minute processMediaStep cron drains the rest.
+    const photoDeadline = deadline - DRAIN_TAIL_RESERVE_MS;
 
     // Phase 2: drain Stagging via parallel HTTP fan-out. Each per-row HTTP
     // call gets its own Wix invocation budget, so this gives real concurrency
     // instead of the single-process Promise.all ceiling. Cron awaits each
     // fetch (not fire-and-forget), so dispatch is deterministic.
-    if (Date.now() < deadline) {
-        const fanResult = await drainStaggingFanOut(deadline);
+    if (Date.now() < photoDeadline) {
+        const fanResult = await drainStaggingFanOut(photoDeadline, runKey);
         counts.promoted += fanResult.promoted || 0;
         counts.imagesUploaded += fanResult.processed || 0;
         counts.imagesFailed += fanResult.failed || 0;
+        counts.drainErrors = (counts.drainErrors || 0) + (fanResult.httpErrors || 0) + (fanResult.secretMissing ? 1 : 0);
+        if (fanResult.secretMissing || fanResult.httpErrors) {
+            log.warn('drain_failed', fanResult.secretMissing
+                ? 'Stagging drain could not run: SYNC_TRIGGER_SECRET is missing or unreadable, so the self-calling photo fan-out is disabled on this site'
+                : `${fanResult.httpErrors} of the Stagging drain's self-calls failed (${(fanResult.errorSamples || []).map(e => e.status || e.error).join(', ')}); check SITE_URL and SYNC_TRIGGER_SECRET`, {
+                details: fanResult
+            });
+        }
+        if (fanResult.stalled) {
+            log.warn('drain_stalled', `Stagging drain made no progress on ${fanResult.stalledRows ? fanResult.stalledRows.length : 0} pending row(s) and stopped early; they will be retried`, {
+                details: fanResult
+            });
+        }
+        if (fanResult.failed) {
+            // Per-row detail (which listing, which URLs, what error) is
+            // written by processOneStaggingRow itself; this is the run-level
+            // rollup so the run's warnings count reflects it.
+            log.warn('photos_failed', `${fanResult.failed} photo upload${fanResult.failed === 1 ? '' : 's'} failed during the Stagging drain (${fanResult.promoted || 0} listings published, ${fanResult.partial || 0} still pending)`, {
+                details: fanResult
+            });
+        }
     }
+
+    // Persist the drain's events before the last phase.
+    await log.flush();
 
     // Phase 3: legacy HousesforSale photo drain. Should be a no-op in steady
     // state because new rows go through Stagging, but handles any leftover
     // rows from before the Stagging gate was added or photos added via
     // toUpdate that need migrating.
-    if (Date.now() < deadline) {
-        const queueResult = await processMediaQueueStep(deadline);
+    if (Date.now() < photoDeadline) {
+        const queueResult = await processMediaQueueStep(photoDeadline, runKey);
         counts.imagesUploaded += queueResult.processed || 0;
         counts.imagesFailed += queueResult.failed || 0;
+        if (queueResult.failed) {
+            log.warn('photos_failed', `${queueResult.failed} photo upload${queueResult.failed === 1 ? '' : 's'} failed in the live-row media queue (last listing ${queueResult.listingId || 'n/a'})`, {
+                listingId: queueResult.listingId || null, details: queueResult
+            });
+        }
         if (queueResult.remaining) await triggerMediaDrain();
     }
 
@@ -557,6 +932,29 @@ export async function backfillPublishedFlag() {
     return { processed, updated };
 }
 
+// Stagging ids written by this pipeline (not legacy Redfin-audit rows, which
+// carry no isPublished flag). Same test as compare.jsw's isLivePipelineRow.
+async function fetchLivePipelineStaggingIds() {
+    const ids = [];
+    let skip = 0;
+    const pageSize = 200;
+    while (true) {
+        const res = await wixData.query(STAGGING)
+            .fields('_id', 'isPublished', 'listingImageGallery')
+            .limit(pageSize).skip(skip)
+            .find({ suppressAuth: true });
+        for (const row of res.items) {
+            const g = row.listingImageGallery;
+            const isPipeline = Object.prototype.hasOwnProperty.call(row, 'isPublished') ||
+                (Array.isArray(g) && g.length && typeof g[0].src === 'string');
+            if (isPipeline) ids.push(row._id);
+        }
+        if (res.items.length < pageSize) break;
+        skip += pageSize;
+    }
+    return ids;
+}
+
 async function fetchAllCollectionIds(collectionName) {
     const all = [];
     let skip = 0;
@@ -601,15 +999,64 @@ async function refreshAllDateOfMlsPull(deadline) {
     return totalUpdated;
 }
 
-export async function runSync(mode) {
+// Guard against a wipe: a full reconcile that would delete more than this
+// share of the live inventory (or MASS_DELETE_MIN rows, whichever is larger)
+// skips its deletes and records them for an operator to review. Re-run with
+// { allowMassDelete: true } (POST /_functions/runSync?mode=full&force=1) to
+// apply them.
+const MASS_DELETE_MIN = 10;
+const MASS_DELETE_SHARE = 0.10;
+
+// options.trigger: 'cron' | 'http' | 'page' | 'manual' (recorded on the run
+// row). options.allowMassDelete: bypass the full-mode delete guard.
+export async function runSync(mode, options = {}) {
     const startedAt = new Date();
     const deadline = Date.now() + SOFT_DEADLINE_MS;
+    const runKey = makeRunKey(mode, startedAt);
+    const log = createRunLog(runKey, mode);
+    // Shared counts object: applyWrites fills it in place, so if a later
+    // phase throws, the run row still records what was written.
+    const counts = { runKey, startedAt, stage: 'start', trigger: (options && options.trigger) || 'manual' };
+    let stage = 'start';
+    const setStage = (s) => { stage = s; counts.stage = s; };
     invalidateVillageCache();
 
     try {
+        // Scheduling gap check (the "cron never fired" blind spot, after the
+        // fact). Compare against the previous run of any mode/status; the
+        // live half of that check is the health feed's NO_RECENT_RUN and
+        // RUN_INCOMPLETE alerts. Runs before this run's own row is inserted.
+        setStage('gap-check');
+        const previous = await getPreviousRun();
+        if (previous && previous.startedAt) {
+            const gapMinutes = (startedAt.getTime() - new Date(previous.startedAt).getTime()) / 60000;
+            counts.gapMinutes = Math.round(gapMinutes * 10) / 10;
+            if (gapMinutes > RUN_LATE_AFTER_MINUTES) {
+                log.warn('gap', `No sync run recorded for ${formatMinutes(gapMinutes)} (expected every ${INCREMENTAL_EVERY_MINUTES} min); previous run was ${previous.mode} at ${new Date(previous.startedAt).toISOString()} (${previous.status})`, {
+                    details: {
+                        gapMinutes: counts.gapMinutes,
+                        expectedEveryMinutes: INCREMENTAL_EVERY_MINUTES,
+                        previousRunKey: previous.runKey || null,
+                        previousStartedAt: previous.startedAt,
+                        previousMode: previous.mode,
+                        previousStatus: previous.status
+                    }
+                });
+                await log.flush();
+            }
+        }
+
+        // Insert the run row now (status 'running') so a hard kill anywhere
+        // below still leaves a row with the stage it died in.
+        setStage('fetch');
+        counts.runRowId = await startRunRow(mode, counts);
+
         let items;
         let requestCount;
         let expectedCount;
+        let knownIds = null;
+        let stagedIds = [];
+        let existingCount = null;
 
         if (mode === 'full') {
             // Verify-by-id: walk every HousesforSale ID and fetch its current
@@ -625,65 +1072,171 @@ export async function runSync(mode) {
             //   - toInsert: naturally empty (we only fetched IDs we already
             //     have). Hourly incremental handles additions.
             const houseIds = await fetchAllCollectionIds(COLLECTION);
-            if (houseIds.length === 0) {
+            existingCount = houseIds.length;
+            // Also verify pipeline-staged rows (never-published listings), so
+            // one that left the market while waiting on photos is dropped
+            // rather than published later. Legacy Redfin-loaded Stagging rows
+            // are excluded (they carry no isPublished flag).
+            stagedIds = await fetchLivePipelineStaggingIds();
+            const verifyIds = [...new Set([...houseIds, ...stagedIds])];
+            knownIds = new Set(verifyIds);
+            if (verifyIds.length === 0) {
                 items = [];
                 requestCount = 0;
             } else {
-                const verify = await fetchByIds(houseIds);
+                const verify = await fetchByIds(verifyIds);
                 items = verify.items;
                 requestCount = verify.requestCount;
             }
             expectedCount = items.length;
         } else {
             const fetchOpts = { since: await getLastSuccessfulRunAt(), activeOnly: false };
+            counts.sinceWatermark = fetchOpts.since;
+            counts.fetchWindowMinutes = Math.round((startedAt.getTime() - fetchOpts.since.getTime()) / 60000);
             const r = await fetchProperties(fetchOpts);
             items = r.items;
             requestCount = r.requestCount;
             expectedCount = r.expectedCount;
+            // Ids we hold, so a live listing whose city changed is removed
+            // now (with a reason) instead of waiting for the nightly.
+            knownIds = new Set(await fetchAllCollectionIds(COLLECTION));
         }
+        counts.mlsGridRequestCount = requestCount;
+        counts.mlsGridListingCount = expectedCount != null ? expectedCount : items.length;
+        counts.mlsGridItemsFetched = items.length;
 
-        const { upsertRaw, removalIds } = await classify(items);
+        setStage('classify');
+        const { upsertRaw, removals } = await classify(items, { knownIds });
         const upserts = upsertRaw.map(({ raw, village }) => transformListing(raw, village));
 
+        setStage('plan');
         const plan = mode === 'full'
-            ? await planFull(upserts)
-            : await planIncremental(upserts, removalIds);
+            ? await planFull(upserts, removals, stagedIds)
+            : await planIncremental(upserts, removals);
 
-        const writeCounts = await applyWrites(plan, deadline);
-
-        // MLSGrid compliance: every HousesforSale row must show a fresh
-        // dateOfMlsPull at least every 12 hours. transformListing only
-        // refreshes rows we wrote in this run, so do a sweep here to keep
-        // untouched rows from going stale.
-        let datesRefreshed = 0;
-        if (Date.now() < deadline) {
-            datesRefreshed = await refreshAllDateOfMlsPull(deadline);
-        }
-
-        // Refresh per-neighborhood active range stats (price/sqft/beds/garage) on
-        // HousesforSale-DynamicPages. Wrapped so a stats failure never breaks
-        // the core listing sync.
-        if (Date.now() < deadline) {
-            try {
-                const vr = await refreshVillageActiveRanges(deadline);
-                console.log('village active ranges:', JSON.stringify(vr));
-            } catch (err) {
-                console.log('refreshVillageActiveRanges failed', err && err.message);
+        if (mode === 'full' && plan.toDelete.length) {
+            const threshold = Math.max(MASS_DELETE_MIN, Math.ceil((existingCount || 0) * MASS_DELETE_SHARE));
+            if (plan.toDelete.length >= threshold && !(options && options.allowMassDelete)) {
+                counts.deletesSkipped = plan.toDelete.length;
+                log.error('mass_delete_guard', `Full reconcile wanted to delete ${plan.toDelete.length} of ${existingCount} live listings (guard threshold ${threshold}); deletes were NOT applied. Review the candidates and re-run with force=1 if they are genuine`, {
+                    details: {
+                        candidates: plan.toDelete.length,
+                        threshold,
+                        live: existingCount,
+                        byReason: plan.toDelete.reduce((acc, d) => { const k = (d.removal && d.removal.reasonCode) || 'unspecified'; acc[k] = (acc[k] || 0) + 1; return acc; }, {}),
+                        sample: plan.toDelete.slice(0, 100).map(d => ({ id: d.prev._id, address: d.prev.propertyAddress, reasonCode: d.removal && d.removal.reasonCode, reason: d.reason }))
+                    }
+                });
+                plan.toDelete = [];
             }
         }
 
-        const counts = {
-            startedAt,
-            mlsGridRequestCount: requestCount,
-            mlsGridListingCount: expectedCount != null ? expectedCount : items.length,
-            datesRefreshed,
-            ...writeCounts
-        };
+        setStage('write');
+        counts.datesRefreshed = 0;
+        counts.statsRefreshed = false;
+        await applyWrites(plan, deadline, counts, log, {
+            runKey,
+            // Runs once the row writes are done, before the photo phases:
+            // checkpoint the run row, then the two end-of-run sweeps. They
+            // used to run after the photo phases and were the first thing
+            // skipped when photos ate the budget; the per-minute cron drains
+            // photos anyway, so compliance and stats go first.
+            checkpoint: async () => {
+                setStage('sweeps');
+                const lc = log.counts();
+                counts.warnings = lc.warnings;
+                counts.errors = lc.errors;
+                counts.eventsStored = lc.flushed;
+                counts.eventsFailed = lc.failed;
+                await recordRun(mode, 'running', counts);
+
+                // MLSGrid compliance: every HousesforSale row must show a
+                // fresh dateOfMlsPull at least every 12 hours.
+                // transformListing only refreshes rows we wrote in this run,
+                // so sweep the rest.
+                setStage('dates');
+                if (Date.now() < deadline) {
+                    counts.datesRefreshed = await refreshAllDateOfMlsPull(deadline);
+                } else {
+                    log.warn('budget', 'Ran out of time before the dateOfMlsPull sweep; untouched rows keep their previous pull date until the next run', {
+                        details: { elapsedMs: Date.now() - startedAt.getTime() }
+                    });
+                }
+
+                // Per-neighborhood active range stats on
+                // HousesforSale-DynamicPages (drive the Google Ads pause
+                // automation). A stats failure never breaks the sync.
+                setStage('stats');
+                if (Date.now() < deadline) {
+                    try {
+                        const vr = await refreshVillageActiveRanges(deadline);
+                        counts.statsRefreshed = !(vr && vr.remaining);
+                        console.log('village active ranges:', JSON.stringify(vr));
+                    } catch (err) {
+                        console.log('refreshVillageActiveRanges failed', err && err.message);
+                        log.error('stats_failed', `Village range stats refresh failed: ${err && err.message ? err.message : err}`, {
+                            details: { error: await describeError(err) }
+                        });
+                    }
+                } else {
+                    log.warn('budget', 'Ran out of time before the village range stats refresh; neighborhood ranges may lag until the next run', {
+                        details: { elapsedMs: Date.now() - startedAt.getTime() }
+                    });
+                }
+                // Second checkpoint: the sweeps' results and the stage the
+                // long photo phase runs under, so a kill there is attributed
+                // correctly.
+                setStage('photos');
+                await recordRun(mode, 'running', counts);
+            }
+        });
+
+        setStage('record');
+        // Row first, then events: the row is what gap detection and the
+        // health feed key on.
+        let lc = log.counts();
+        counts.warnings = lc.warnings;
+        counts.errors = lc.errors;
+        counts.eventsStored = lc.flushed + lc.pending;
+        counts.eventsFailed = lc.failed;
+        counts.stage = 'done';
         await recordRun(mode, 'ok', counts);
-        return { status: 'ok', ...counts };
+        await log.flush();
+        lc = log.counts();
+        if (lc.failed !== counts.eventsFailed || lc.flushed !== counts.eventsStored) {
+            counts.eventsStored = lc.flushed;
+            counts.eventsFailed = lc.failed;
+            await recordRun(mode, 'ok', counts);
+        }
+        const { runRowId, ...publicCounts } = counts;
+        return { status: 'ok', ...publicCounts };
     } catch (err) {
-        const msg = err && err.message ? err.message : String(err);
-        await recordRun(mode, 'error', { startedAt }, msg);
+        const info = await describeError(err);
+        const msg = info.message;
+        const elapsedMs = Date.now() - startedAt.getTime();
+        log.error('run_error', `${mode} run failed during ${stage} after ${Math.round(elapsedMs / 1000)}s: ${msg}`, {
+            details: {
+                stage,
+                error: info,
+                elapsedMs,
+                countsSoFar: {
+                    inserted: counts.inserted || 0, updated: counts.updated || 0, deleted: counts.deleted || 0,
+                    promoted: counts.promoted || 0, imagesUploaded: counts.imagesUploaded || 0,
+                    imagesFailed: counts.imagesFailed || 0, writesFailed: counts.writesFailed || 0,
+                    mlsGridRequestCount: counts.mlsGridRequestCount || 0, mlsGridListingCount: counts.mlsGridListingCount || 0
+                },
+                sinceWatermark: counts.sinceWatermark || null
+            }
+        });
+        const lc = log.counts();
+        counts.errorStage = stage;
+        counts.errorStack = info.stack || null;
+        counts.warnings = lc.warnings;
+        counts.errors = lc.errors;
+        counts.eventsStored = lc.flushed + lc.pending;
+        counts.eventsFailed = lc.failed;
+        await recordRun(mode, 'error', counts, msg);
+        await log.flush();
         throw err;
     }
 }
