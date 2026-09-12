@@ -276,12 +276,18 @@ export async function planFull(incomingUpserts, incomingRemovals, stagedIds) {
     const existingIds = await fetchAllIds();
     const existing = await fetchExistingByIds(existingIds);
 
+    const stagedSet = new Set(Array.isArray(stagedIds) ? stagedIds : []);
     const toInsert = [];
     const toUpdate = [];
+    // Staged-but-not-live listings that are still Active: refresh the
+    // staged copy with the latest MLS data (fresh photo URLs in particular)
+    // without counting them as inserts every night.
+    const toRestage = [];
     for (const item of incomingUpserts) {
         const prev = existing.get(item._id);
         if (!prev) {
-            toInsert.push(item);
+            if (stagedSet.has(item._id)) toRestage.push(item);
+            else toInsert.push(item);
             continue;
         }
         const change = changeReasons(prev, item);
@@ -314,5 +320,5 @@ export async function planFull(incomingUpserts, incomingRemovals, stagedIds) {
             toUnstage.push({ prev, removal, reason: removal.reason });
         }
     }
-    return { toInsert, toUpdate, toDelete, toUnstage };
+    return { toInsert, toUpdate, toDelete, toUnstage, toRestage };
 }

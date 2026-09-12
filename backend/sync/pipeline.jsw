@@ -257,6 +257,7 @@ function runRowFields(mode, status, counts, errorMessage) {
         mlsGridRequestCount: counts.mlsGridRequestCount || 0,
         mlsGridListingCount: counts.mlsGridListingCount || 0,
         unstaged: counts.unstaged || 0,
+        restaged: counts.restaged || 0,
         listingsChanged: (counts.inserted || 0) + (counts.updated || 0) + (counts.deleted || 0) + (counts.unstaged || 0),
         trigger: counts.trigger || null,
         mlsGridItemsFetched: counts.mlsGridItemsFetched || 0,
@@ -529,9 +530,9 @@ function deleteLevel(reasonCode) {
     return (reasonCode === 'no_village' || reasonCode === 'not_in_feed' || reasonCode === 'mls_revoked' || reasonCode === 'city_change') ? 'warn' : 'info';
 }
 
-async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline, counts, log, options = {}) {
+async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage, toRestage }, deadline, counts, log, options = {}) {
     counts = counts || {};
-    for (const k of ['inserted', 'updated', 'deleted', 'unstaged', 'promoted', 'imagesUploaded', 'imagesFailed', 'imagesTrashed', 'writesFailed']) {
+    for (const k of ['inserted', 'updated', 'deleted', 'unstaged', 'restaged', 'promoted', 'imagesUploaded', 'imagesFailed', 'imagesTrashed', 'writesFailed']) {
         if (typeof counts[k] !== 'number') counts[k] = 0;
     }
     log = log || noopLog();
@@ -551,7 +552,7 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
         await log.flush();
         try { await progress(); } catch (err) { console.log('progress checkpoint failed', err && err.message); }
     };
-    const totalWrites = toInsert.length + toUpdate.length + toDelete.length + (toUnstage || []).length;
+    const totalWrites = toInsert.length + toUpdate.length + toDelete.length + (toUnstage || []).length + (toRestage || []).length;
     if (totalWrites) {
         // Persist the 'write' stage before the loops so a kill in them is
         // attributed to the right phase.
@@ -623,6 +624,40 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
             }
         } catch (err) {
             await writeFailed('Stagging insert', item, err);
+        }
+        await wrote();
+    }
+
+    // Nightly refresh of staged, never-published listings that are still
+    // Active: latest MLS data + merged gallery, so a row staged with no
+    // photos (MLSGrid sent none at the time) picks them up once they exist.
+    // Counted as restaged, not inserted; an event only when photos arrive.
+    for (const item of (toRestage || [])) {
+        const existing = await wixData.get(STAGGING, item._id, { suppressAuth: true }).catch(() => null);
+        if (!existing) continue; // promoted or dropped since the plan was made
+        const prevGallery = Array.isArray(existing.listingImageGallery) ? existing.listingImageGallery : [];
+        const merged = mergeGallery(item.listingImageGallery, prevGallery);
+        const firstWix = merged.find(g => g && g.src && !g.src.startsWith('http'));
+        const { photoFailStreak, photoFailSignature, lastPhotoFailAt, rehydrateErrorSignature } = existing;
+        const record = {
+            ...existing,
+            ...item,
+            listingImageGallery: merged,
+            listingPrimaryImage: firstWix ? firstWix.src : item.listingPrimaryImage,
+            isPublished: false,
+            photoFailStreak, photoFailSignature, lastPhotoFailAt, rehydrateErrorSignature
+        };
+        try {
+            await wixData.update(STAGGING, record, { suppressAuth: true });
+            counts.restaged += 1;
+            if (!prevGallery.length && merged.length) {
+                log.info('restage', `Staged listing ${item.propertyAddress} now has ${merged.length} photos from MLSGrid (it was staged with none); uploads start with the next drain`, {
+                    listingId: item._id, address: item.propertyAddress, village: item.village,
+                    details: { photos: merged.length, stagedSince: existing._createdDate || null }
+                });
+            }
+        } catch (err) {
+            await writeFailed('Stagging refresh', item, err);
         }
         await wrote();
     }
@@ -1152,17 +1187,23 @@ export async function runSync(mode, options = {}) {
         if (mode === 'full' && plan.toDelete.length) {
             const threshold = Math.max(MASS_DELETE_MIN, Math.ceil((existingCount || 0) * MASS_DELETE_SHARE));
             if (plan.toDelete.length >= threshold && !(options && options.allowMassDelete)) {
-                counts.deletesSkipped = plan.toDelete.length;
-                log.error('mass_delete_guard', `Full reconcile wanted to delete ${plan.toDelete.length} of ${existingCount} live listings (guard threshold ${threshold}); deletes were NOT applied. Review the candidates and re-run with force=1 if they are genuine`, {
+                // The suspect feed is just as suspect about staged rows:
+                // hold those back too (their uploaded photos would be trashed
+                // and there is no review path once they are gone).
+                const held = [...plan.toDelete, ...(plan.toUnstage || [])];
+                counts.deletesSkipped = held.length;
+                log.error('mass_delete_guard', `Full reconcile wanted to delete ${plan.toDelete.length} of ${existingCount} live listings${(plan.toUnstage || []).length ? ` and drop ${plan.toUnstage.length} staged` : ''} (guard threshold ${threshold}); nothing was removed. Review the candidates and re-run with force=1 if they are genuine`, {
                     details: {
                         candidates: plan.toDelete.length,
+                        stagedCandidates: (plan.toUnstage || []).length,
                         threshold,
                         live: existingCount,
-                        byReason: plan.toDelete.reduce((acc, d) => { const k = (d.removal && d.removal.reasonCode) || 'unspecified'; acc[k] = (acc[k] || 0) + 1; return acc; }, {}),
-                        sample: plan.toDelete.slice(0, 100).map(d => ({ id: d.prev._id, address: d.prev.propertyAddress, reasonCode: d.removal && d.removal.reasonCode, reason: d.reason }))
+                        byReason: held.reduce((acc, d) => { const k = (d.removal && d.removal.reasonCode) || 'unspecified'; acc[k] = (acc[k] || 0) + 1; return acc; }, {}),
+                        sample: held.slice(0, 100).map(d => ({ id: d.prev._id, address: d.prev.propertyAddress, staged: !d.prev.isPublished && !!plan.toUnstage && plan.toUnstage.some(u => u.prev._id === d.prev._id), reasonCode: d.removal && d.removal.reasonCode, reason: d.reason }))
                     }
                 });
                 plan.toDelete = [];
+                plan.toUnstage = [];
             }
         }
 
@@ -1288,15 +1329,17 @@ export async function runSync(mode, options = {}) {
                 sinceWatermark: counts.sinceWatermark || null
             }
         });
+        // Flush first so the error row carries the real stored/failed
+        // counts (this is a JS throw, not a kill: there is time).
+        await log.flush();
         const lc = log.counts();
         counts.errorStage = stage;
         counts.errorStack = info.stack || null;
         counts.warnings = lc.warnings;
         counts.errors = lc.errors;
-        counts.eventsStored = lc.flushed + lc.pending;
+        counts.eventsStored = lc.flushed;
         counts.eventsFailed = lc.failed;
         await recordRun(mode, 'error', counts, msg);
-        await log.flush();
         throw err;
     }
 }

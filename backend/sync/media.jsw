@@ -124,6 +124,7 @@ export async function processMediaQueueStep(deadline, runKey) {
         }
 
         let rowProcessed = 0;
+        let rowFailed = 0; // from actual upload results, never from what was left unattempted
         let firstError = null;
         for (let b = 0; b < pendingIdxs.length && Date.now() < effectiveDeadline; b += PARALLEL_UPLOADS) {
             const batch = pendingIdxs.slice(b, b + PARALLEL_UPLOADS);
@@ -146,13 +147,14 @@ export async function processMediaQueueStep(deadline, runKey) {
                     rowProcessed += 1;
                 } else {
                     totalFailed += 1;
+                    rowFailed += 1;
                 }
             }
             await flushGallery(target, gallery);
         }
         // Throttled failure event (this queue is also driven by the
         // per-minute cron): first failure, then at most once an hour per row.
-        const rowFailed = pendingIdxs.length - rowProcessed;
+        // Only when uploads were actually attempted and all of them failed.
         if (rowFailed > 0 && rowProcessed === 0) {
             const last = target.lastPhotoFailAt ? new Date(target.lastPhotoFailAt).getTime() : 0;
             if (Date.now() - last > 60 * 60 * 1000) {
@@ -167,7 +169,10 @@ export async function processMediaQueueStep(deadline, runKey) {
                 }
             }
         }
-        if (rowProcessed === 0) stuck.add(target._id);
+        // A row is stuck only if we tried and got nowhere; a row we had no
+        // time to attempt is simply pending for the next invocation.
+        if (rowProcessed === 0 && rowFailed > 0) stuck.add(target._id);
+        else if (rowProcessed === 0) break;
     }
 
     // Report remaining work excluding rows that are stuck on dead URLs, so

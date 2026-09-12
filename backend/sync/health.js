@@ -288,8 +288,8 @@ function buildAlerts(ctx) {
     if (lastOkRun && sinceOk != null && sinceOk > RUN_LATE_AFTER_MINUTES && !(sinceLast != null && sinceLast > RUN_LATE_AFTER_MINUTES)) {
         add('warning', 'NO_RECENT_OK_RUN', `Runs are happening but none has succeeded for ${Math.round(sinceOk)} min`, { since: lastOkRun.startedAt, count: Math.round(sinceOk) });
     }
-    if (!lastOkRun) {
-        add('warning', 'NO_OK_RUN_IN_WINDOW', `None of the last ${runs.length} runs succeeded`, { since: runs[runs.length - 1].startedAt, count: runs.length });
+    if (!runs.some(r => r.status === 'ok')) {
+        add('warning', 'NO_OK_RUN_IN_WINDOW', `None of the last ${runs.length} run${runs.length === 1 ? '' : 's'} succeeded`, { since: runs[runs.length - 1].startedAt, count: runs.length });
     }
 
     const fullAgeHours = lastOkFullRun ? hoursBetween(now, lastOkFullRun.startedAt) : null;

@@ -89,6 +89,7 @@ Permissions: admin read/write only.
 | `errorStack` | Text | first 2000 chars of the stack |
 | `trigger` | Text | `cron`, `http`, `page`, or `manual` |
 | `unstaged` | Number | staged (never published) rows dropped because their listing left the market |
+| `restaged` | Number | staged (never published) rows the nightly refreshed from MLSGrid (not counted as inserts) |
 | `deletesSkipped` | Number | deletes the mass-delete guard refused to apply |
 | `drainErrors` | Number | photo-drain self-calls that failed (wrong `SITE_URL` / secret) |
 | `statsRefreshed` | Boolean | the neighborhood range stats sweep completed |
@@ -117,6 +118,7 @@ Permissions: admin read-only; backend writes. Retention: 30 days.
 | `update` | info / warn | live row rewritten; message lists why (`price $1,395,000 -> $1,295,000; photos 24 -> 28 (4 new, 0 dropped)`); warn when MLSGrid sent no photos this fetch |
 | `delete` | info / warn | live row removed; message ends with the reason and `details.reasonCode` is one of `status_change` (info), `property_type` (info), `no_village` (warn: fix `Villages`), `city_change` (warn), `mls_revoked` (warn: MLSGrid's `MlgCanView` is false), `not_in_feed` (warn: the nightly found MLSGrid no longer returns it), `manual_refresh` (a forced rebuild). `details.mls` carries the MLS status/subdivision/city/price at removal time |
 | `unstage` | info / warn | a staged, never-published listing dropped for the same reasons |
+| `restage` | info | the nightly refreshed a staged, never-published listing and it gained photos it had been staged without |
 | `promote` | info | Stagging row published to HousesforSale (new listing or photo swap) |
 | `photos_failed` | warn | photo uploads failed for one listing: how many, first error, sample URLs. Written on the first failure, then every 10th consecutive attempt or when the error changes, so one stuck row cannot flood the log. During the row-write loops the run also flushes events and updates its row every 25 writes or 8 seconds, so a killed run keeps most of its trail |
 | `photos_recovered` | info | uploads succeeded again after a failing streak |
@@ -304,7 +306,7 @@ Per site store `{ key, baseUrl, monitorSecret }` and poll `listingsHealth` from 
 
 ### Mass-delete guard
 
-A full reconcile that would delete `max(10, 10%)` of the live inventory does not apply the deletes. It records `deletesSkipped` on the run, writes a `mass_delete_guard` error event with the candidates grouped by reason, and the feed raises `MASS_DELETE_BLOCKED`. Read the candidates; if the MLS is right, apply them:
+A full reconcile that would delete `max(10, 10%)` of the live inventory does not apply the deletes, nor the staged-row drops planned in the same run. It records `deletesSkipped` on the run, writes a `mass_delete_guard` error event with the candidates grouped by reason, and the feed raises `MASS_DELETE_BLOCKED`. Read the candidates; if the MLS is right, apply them:
 
 ```bash
 curl -X POST "https://<site>/_functions/runSync?mode=full&force=1" -H "x-sync-secret: $SYNC_TRIGGER_SECRET"
