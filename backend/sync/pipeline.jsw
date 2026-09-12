@@ -14,8 +14,13 @@ const RUNS = 'SyncRuns';
 const POSTAL_CITY = 'longboat key';
 const SOFT_DEADLINE_MS = 50 * 1000;
 // Reserved at the end of applyWrites so the photo phases stop early enough
-// for the pull-date sweep, stats refresh and run record to complete.
-const DRAIN_TAIL_RESERVE_MS = 10 * 1000;
+// for the final event flush and run record to complete (the sweeps now run
+// before the photo phases, so the tail is short).
+const DRAIN_TAIL_RESERVE_MS = 5 * 1000;
+// During the row-write loops, persist events and checkpoint the run row
+// this often, so a kill mid-write loses at most a few seconds of trail.
+const WRITE_FLUSH_EVERY = 25;
+const WRITE_FLUSH_MS = 8 * 1000;
 
 // What MLSGrid PropertyType values we consider on-site. RESO values:
 //   'Residential'       - for-sale homes, condos, townhouses (yes)
@@ -298,6 +303,10 @@ async function recordRun(mode, status, counts, errorMessage) {
             return;
         } catch (err) {
             console.log('recordRun update failed, inserting instead', err && err.message);
+            // Never leave the original row behind at 'running': it would
+            // read as a killed run forever and duplicate this run's key.
+            await wixData.remove(RUNS, counts.runRowId, { suppressAuth: true }).catch(() => null);
+            counts.runRowId = null;
         }
     }
     try {
@@ -527,7 +536,27 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
     }
     log = log || noopLog();
     const checkpoint = typeof options.checkpoint === 'function' ? options.checkpoint : async () => {};
+    const progress = typeof options.progress === 'function' ? options.progress : async () => {};
     const runKey = options.runKey || null;
+    // Periodic durability inside the write loops: flush events and update
+    // the run row's counts/stage so a Wix kill mid-write keeps most of the
+    // insert/update/delete trail instead of none of it.
+    let writesSinceFlush = 0;
+    let lastFlushAt = Date.now();
+    const wrote = async () => {
+        writesSinceFlush += 1;
+        if (writesSinceFlush < WRITE_FLUSH_EVERY && Date.now() - lastFlushAt < WRITE_FLUSH_MS) return;
+        writesSinceFlush = 0;
+        lastFlushAt = Date.now();
+        await log.flush();
+        try { await progress(); } catch (err) { console.log('progress checkpoint failed', err && err.message); }
+    };
+    const totalWrites = toInsert.length + toUpdate.length + toDelete.length + (toUnstage || []).length;
+    if (totalWrites) {
+        // Persist the 'write' stage before the loops so a kill in them is
+        // attributed to the right phase.
+        try { await progress(); } catch (err) { console.log('progress checkpoint failed', err && err.message); }
+    }
     const writeFailed = async (what, item, err) => {
         counts.writesFailed += 1;
         console.log(`${what} failed for`, item._id, err && err.message);
@@ -567,6 +596,7 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
             } catch (err) {
                 await writeFailed('Stagging update', item, err);
             }
+            await wrote();
             continue;
         }
 
@@ -594,6 +624,7 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
         } catch (err) {
             await writeFailed('Stagging insert', item, err);
         }
+        await wrote();
     }
 
     for (const { item, prev, reasons, fields } of toUpdate) {
@@ -628,6 +659,7 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
                 await trashMedia(orphaned);
                 counts.imagesTrashed += orphaned.length;
             }
+            await wrote();
             continue;
         }
 
@@ -683,6 +715,7 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
         } catch (err) {
             await writeFailed('Stagging stage-for-update', item, err);
         }
+        await wrote();
     }
 
     for (const entry of toDelete) {
@@ -723,6 +756,7 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
                 wasLive: true
             }
         });
+        await wrote();
     }
 
     // Listings that left the market while still in Stagging (never live).
@@ -756,6 +790,7 @@ async function applyWrites({ toInsert, toUpdate, toDelete, toUnstage }, deadline
                 wasLive: false
             }
         });
+        await wrote();
     }
 
     // Row writes are done: persist their events and checkpoint the run row
@@ -1134,60 +1169,85 @@ export async function runSync(mode, options = {}) {
         setStage('write');
         counts.datesRefreshed = 0;
         counts.statsRefreshed = false;
+        const syncCounts = () => {
+            const lc = log.counts();
+            counts.warnings = lc.warnings;
+            counts.errors = lc.errors;
+            counts.eventsStored = lc.flushed;
+            counts.eventsFailed = lc.failed;
+        };
         await applyWrites(plan, deadline, counts, log, {
             runKey,
+            // Called before and periodically during the row-write loops
+            // (after an event flush): keeps the run row's stage and counts
+            // current so a kill mid-write is attributed and counted.
+            progress: async () => {
+                if (stage !== 'write') setStage('write');
+                syncCounts();
+                await recordRun(mode, 'running', counts);
+            },
             // Runs once the row writes are done, before the photo phases:
             // checkpoint the run row, then the two end-of-run sweeps. They
             // used to run after the photo phases and were the first thing
             // skipped when photos ate the budget; the per-minute cron drains
-            // photos anyway, so compliance and stats go first.
+            // photos anyway, so compliance and stats go first. Each sweep is
+            // isolated: a failure is an error event, never a silent skip,
+            // and the 'photos' checkpoint always runs.
             checkpoint: async () => {
-                setStage('sweeps');
-                const lc = log.counts();
-                counts.warnings = lc.warnings;
-                counts.errors = lc.errors;
-                counts.eventsStored = lc.flushed;
-                counts.eventsFailed = lc.failed;
-                await recordRun(mode, 'running', counts);
+                try {
+                    setStage('sweeps');
+                    syncCounts();
+                    await recordRun(mode, 'running', counts);
 
-                // MLSGrid compliance: every HousesforSale row must show a
-                // fresh dateOfMlsPull at least every 12 hours.
-                // transformListing only refreshes rows we wrote in this run,
-                // so sweep the rest.
-                setStage('dates');
-                if (Date.now() < deadline) {
-                    counts.datesRefreshed = await refreshAllDateOfMlsPull(deadline);
-                } else {
-                    log.warn('budget', 'Ran out of time before the dateOfMlsPull sweep; untouched rows keep their previous pull date until the next run', {
-                        details: { elapsedMs: Date.now() - startedAt.getTime() }
-                    });
-                }
-
-                // Per-neighborhood active range stats on
-                // HousesforSale-DynamicPages (drive the Google Ads pause
-                // automation). A stats failure never breaks the sync.
-                setStage('stats');
-                if (Date.now() < deadline) {
-                    try {
-                        const vr = await refreshVillageActiveRanges(deadline);
-                        counts.statsRefreshed = !(vr && vr.remaining);
-                        console.log('village active ranges:', JSON.stringify(vr));
-                    } catch (err) {
-                        console.log('refreshVillageActiveRanges failed', err && err.message);
-                        log.error('stats_failed', `Village range stats refresh failed: ${err && err.message ? err.message : err}`, {
-                            details: { error: await describeError(err) }
+                    // MLSGrid compliance: every HousesforSale row must show a
+                    // fresh dateOfMlsPull at least every 12 hours.
+                    // transformListing only refreshes rows we wrote in this
+                    // run, so sweep the rest.
+                    setStage('dates');
+                    if (Date.now() < deadline) {
+                        try {
+                            counts.datesRefreshed = await refreshAllDateOfMlsPull(deadline);
+                        } catch (err) {
+                            console.log('refreshAllDateOfMlsPull failed', err && err.message);
+                            log.error('sweep_failed', `dateOfMlsPull sweep failed: ${err && err.message ? err.message : err}`, {
+                                details: { error: await describeError(err) }
+                            });
+                        }
+                    } else {
+                        log.warn('budget', 'Ran out of time before the dateOfMlsPull sweep; untouched rows keep their previous pull date until the next run', {
+                            details: { elapsedMs: Date.now() - startedAt.getTime() }
                         });
                     }
-                } else {
-                    log.warn('budget', 'Ran out of time before the village range stats refresh; neighborhood ranges may lag until the next run', {
-                        details: { elapsedMs: Date.now() - startedAt.getTime() }
-                    });
+
+                    // Per-neighborhood active range stats on
+                    // HousesforSale-DynamicPages (drive the Google Ads pause
+                    // automation). A stats failure never breaks the sync.
+                    setStage('stats');
+                    if (Date.now() < deadline) {
+                        try {
+                            const vr = await refreshVillageActiveRanges(deadline);
+                            counts.statsRefreshed = !(vr && vr.remaining);
+                            console.log('village active ranges:', JSON.stringify(vr));
+                        } catch (err) {
+                            console.log('refreshVillageActiveRanges failed', err && err.message);
+                            log.error('stats_failed', `Village range stats refresh failed: ${err && err.message ? err.message : err}`, {
+                                details: { error: await describeError(err) }
+                            });
+                        }
+                    } else {
+                        log.warn('budget', 'Ran out of time before the village range stats refresh; neighborhood ranges may lag until the next run', {
+                            details: { elapsedMs: Date.now() - startedAt.getTime() }
+                        });
+                    }
+                } finally {
+                    // Second checkpoint: the sweeps' results and the stage
+                    // the long photo phase runs under, so a kill there is
+                    // attributed correctly.
+                    setStage('photos');
+                    syncCounts();
+                    await log.flush();
+                    await recordRun(mode, 'running', counts);
                 }
-                // Second checkpoint: the sweeps' results and the stage the
-                // long photo phase runs under, so a kill there is attributed
-                // correctly.
-                setStage('photos');
-                await recordRun(mode, 'running', counts);
             }
         });
 

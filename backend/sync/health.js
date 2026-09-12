@@ -145,21 +145,30 @@ function hostOf(url) {
 }
 
 // Paged event query (newest first). Options (strings, from the query string):
-//   since / before  ISO timestamps; since is inclusive (>=), before exclusive
+//   since / before  ISO timestamps; both inclusive. `before` is inclusive
+//                   because `at` is not unique (events pushed back-to-back
+//                   share a millisecond); an exclusive bound would skip the
+//                   rest of a tie group at a page boundary. The poller
+//                   dedupes on event id and stops when a page adds nothing.
+//   skip            exact paging offset within the filtered, totally ordered
+//                   (at desc, _id desc) result; the response's nextSkip is
+//                   the value for the next page. Prefer this to `before`
+//                   when a page must be exact.
 //   level           minimum level, default info
 //   limit           default 100, max 500
 //   kind, listingId, runKey, mode   exact-match filters
-// Returns { events, count, hasMore, nextBefore, newestAt }. The poller keeps
-// newestAt as its next `since` and dedupes on event id.
+// Returns { events, count, hasMore, nextBefore, nextSkip, newestAt }. The
+// poller keeps newestAt as its next `since` and dedupes on event id.
 export async function queryEvents(opts) {
     const o = opts || {};
     const limit = clampInt(o.limit, 100, QUERY_EVENTS_MAX);
-    let q = wixData.query(EVENTS).descending('at').limit(limit);
+    const skip = Math.max(0, parseInt(o.skip, 10) || 0);
+    let q = wixData.query(EVENTS).descending('at').descending('_id').limit(limit).skip(skip);
     const since = parseTime(o.since);
     const before = parseTime(o.before);
     if (o.since && !since) return { site: SITE_KEY, error: 'since is not a valid ISO timestamp', count: 0, hasMore: false, nextBefore: null, newestAt: null, events: [] };
     if (since) q = q.ge('at', since);
-    if (before) q = q.lt('at', before);
+    if (before) q = q.le('at', before);
     const levels = levelsAtOrAbove(o.level || 'info');
     if (levels.length < LEVELS.length) q = q.hasSome('level', levels);
     for (const f of ['kind', 'listingId', 'runKey', 'mode']) {
@@ -174,6 +183,7 @@ export async function queryEvents(opts) {
         hasMore,
         truncated: hasMore,
         nextBefore: events.length && hasMore ? events[events.length - 1].at : null,
+        nextSkip: hasMore ? skip + events.length : null,
         newestAt: events.length ? events[0].at : null,
         events
     };
@@ -396,8 +406,21 @@ export async function buildHealthReport(opts) {
     const feedErrors = [];
 
     const runs = await section('SyncRuns', feedErrors, async () => {
-        const res = await wixData.query(RUNS).descending('startedAt').limit(RECENT_RUNS).find({ suppressAuth: true });
-        return res.items;
+        const res = await wixData.query(RUNS).descending('startedAt').limit(RECENT_RUNS + 4).find({ suppressAuth: true });
+        // One row per runKey, preferring a terminal status over 'running',
+        // in case a run had to re-insert its row after a failed update.
+        const byKey = new Map();
+        const out = [];
+        for (const r of res.items) {
+            const k = r.runKey || r._id;
+            const prev = byKey.get(k);
+            if (!prev) { byKey.set(k, r); out.push(r); continue; }
+            if (prev.status === 'running' && r.status !== 'running') {
+                out[out.indexOf(prev)] = r;
+                byKey.set(k, r);
+            }
+        }
+        return out.slice(0, RECENT_RUNS);
     }, []);
     const lastRun = runs[0] || null;
     let lastOkRun = runs.find(r => r.status === 'ok') || null;

@@ -24,12 +24,14 @@ function wait(ms) {
     return new Promise(r => setTimeout(r, ms));
 }
 
-async function fetchWithRetry(url, headers, attempt = 0) {
+// maxRetries: override MAX_RETRIES (0 = single attempt) for callers that
+// run inside someone else's time budget (the Stagging drain's re-hydrate).
+async function fetchWithRetry(url, headers, attempt = 0, maxRetries = MAX_RETRIES) {
     try {
         const res = await fetch(url, { method: 'GET', headers });
-        if (res.status >= 500 && attempt < MAX_RETRIES) {
+        if (res.status >= 500 && attempt < maxRetries) {
             await wait(1000 * Math.pow(2, attempt));
-            return fetchWithRetry(url, headers, attempt + 1);
+            return fetchWithRetry(url, headers, attempt + 1, maxRetries);
         }
         if (!res.ok) {
             const body = await res.text();
@@ -37,9 +39,9 @@ async function fetchWithRetry(url, headers, attempt = 0) {
         }
         return res.json();
     } catch (err) {
-        if (attempt < MAX_RETRIES) {
+        if (attempt < maxRetries) {
             await wait(1000 * Math.pow(2, attempt));
-            return fetchWithRetry(url, headers, attempt + 1);
+            return fetchWithRetry(url, headers, attempt + 1, maxRetries);
         }
         throw err;
     }
@@ -113,7 +115,9 @@ export async function debugHydrate(listingId) {
     return results;
 }
 
-export async function hydrateListing(listingId) {
+// options.maxRetries: bound the retry backoff (default MAX_RETRIES, i.e. up
+// to 1+2+4+8s of sleeping on a failing MLSGrid).
+export async function hydrateListing(listingId, options = {}) {
     if (!listingId) return null;
     const normalized = normalizeListingId(listingId);
     const headers = await authHeader();
@@ -121,7 +125,8 @@ export async function hydrateListing(listingId) {
         `OriginatingSystemName eq '${ORIG_SYSTEM}' and ListingId eq '${normalized}'`
     );
     const url = `${BASE}?$filter=${filter}&$expand=${EXPAND}&$top=1`;
-    const page = await fetchWithRetry(url, headers);
+    const maxRetries = typeof options.maxRetries === 'number' ? options.maxRetries : MAX_RETRIES;
+    const page = await fetchWithRetry(url, headers, 0, maxRetries);
     if (Array.isArray(page.value) && page.value.length) return page.value[0];
     return null;
 }

@@ -218,12 +218,15 @@ function normalizeRemovals(incomingRemovals) {
 
 // Listings that leave the market while still in Stagging (never live) must
 // be removed too, or they leak partial uploads and can later publish as if
-// Active. Returns [{ prev, removal }] for removal ids present in Stagging.
-async function planUnstage(removals) {
-    if (!removals.length) return [];
-    const staged = await fetchExistingByIds(removals.map(r => r.id), STAGGING);
+// Active. Returns [{ prev, removal }] for removal ids present in Stagging
+// and NOT live: a live listing's Stagging twin (a photo-swap round) is
+// cleaned up by the delete loop together with the live row and its media.
+async function planUnstage(removals, liveIds) {
+    const candidates = removals.filter(r => !(liveIds && liveIds.has(r.id)));
+    if (!candidates.length) return [];
+    const staged = await fetchExistingByIds(candidates.map(r => r.id), STAGGING);
     const toUnstage = [];
-    for (const r of removals) {
+    for (const r of candidates) {
         const prev = staged.get(r.id);
         if (prev) toUnstage.push({ prev, removal: r, reason: r.reason });
     }
@@ -252,7 +255,7 @@ export async function planIncremental(incomingUpserts, incomingRemovals) {
         const prev = existing.get(r.id);
         if (prev) toDelete.push({ prev, removal: r, reason: r.reason });
     }
-    const toUnstage = await planUnstage(removals);
+    const toUnstage = await planUnstage(removals, new Set(existing.keys()));
     return { toInsert, toUpdate, toDelete, toUnstage };
 }
 
@@ -301,10 +304,12 @@ export async function planFull(incomingUpserts, incomingRemovals, stagedIds) {
     // left alone (they'll be re-evaluated when their listing next changes).
     const toUnstage = [];
     if (Array.isArray(stagedIds) && stagedIds.length) {
+        const liveIds = new Set(existingIds);
         const staged = await fetchExistingByIds(stagedIds, STAGGING);
         for (const id of stagedIds) {
             const prev = staged.get(id);
-            if (!prev || incomingIds.has(id)) continue;
+            // A live listing's twin is handled by the delete loop above.
+            if (!prev || incomingIds.has(id) || liveIds.has(id)) continue;
             const removal = removalById.get(id) || { id, ...NOT_IN_FEED };
             toUnstage.push({ prev, removal, reason: removal.reason });
         }

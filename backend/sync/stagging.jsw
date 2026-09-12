@@ -15,8 +15,12 @@ const PER_ROW_DEADLINE_MS = 50 * 1000;
 // A parent (cron/runSync) awaiting a wave must not be held past its own
 // kill: it passes budgetMs and the child stops CHILD_MARGIN_MS before it.
 const CHILD_MARGIN_MS = 5 * 1000;
-// Don't start a wave with less than this left - a wave can't finish in less.
-const MIN_WAVE_BUDGET_MS = 15 * 1000;
+// Don't start a wave with less than this left - one upload batch needs
+// about this long. Children honour budgetMs, so waves can be short.
+const MIN_WAVE_BUDGET_MS = 8 * 1000;
+// Skip the post-loop MLSGrid re-fetch when less than this remains: it is
+// the one thing after the upload loop that can take seconds.
+const HYDRATE_MIN_MS = 4 * 1000;
 // Photo-failure events are written on transitions only (first failure,
 // every Nth consecutive failure, error signature change, recovery) so one
 // stuck row cannot flood SyncEvents from the per-minute cron.
@@ -196,16 +200,31 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     // links forever - unless the listing has left the market, in which case
     // drop it (the nightly full also does this, but here we already know).
     if (pendingIdxs.length && processed === 0 && failed > 0) {
+        if (deadline - Date.now() < HYDRATE_MIN_MS) {
+            // Out of budget for the re-fetch; the next attempt does it.
+            return { rowId, status: 'partial', processed, failed };
+        }
         try {
-            const raw = await hydrateListing(rowId);
+            // One retry at most: this runs inside the caller's budget, and a
+            // broken key or an MLSGrid outage must not cost 15s of backoff
+            // on every attempt of every stuck row.
+            const raw = await hydrateListing(rowId, { maxRetries: 1 });
             const mlsStatus = raw ? (raw.StandardStatus || '') : '';
             if (raw && mlsStatus && mlsStatus.toLowerCase() !== 'active') {
-                const wixSrcs = gallery.filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http')).map(g => g.src);
+                // A photo-swap round for a LIVE listing shares its hosted
+                // files with the HousesforSale row (mergeGallery maps
+                // unchanged photos to the live srcs). Never trash those
+                // here: drop the staged copy only, and let the next sync
+                // remove the live row and its media together.
+                const live = await wixData.get(HOUSES, rowId, { suppressAuth: true }).catch(() => null);
+                const wixSrcs = live ? [] : gallery.filter(g => g && typeof g.src === 'string' && !g.src.startsWith('http')).map(g => g.src);
                 await wixData.remove(STAGGING, rowId, { suppressAuth: true });
                 if (wixSrcs.length) await trashMedia(wixSrcs);
-                await logEvent('info', 'unstage', `Dropped staged (never published) listing ${row.propertyAddress || rowId}: Status changed to ${mlsStatus} while its photos were still failing`, {
+                await logEvent('info', 'unstage', live
+                    ? `Abandoned the pending photo swap for ${row.propertyAddress || rowId}: Status changed to ${mlsStatus}; the live listing is removed by the next sync`
+                    : `Dropped staged (never published) listing ${row.propertyAddress || rowId}: Status changed to ${mlsStatus} while its photos were still failing`, {
                     ...ctx,
-                    details: { reason: `Status changed to ${mlsStatus}`, reasonCode: 'status_change', mls: { status: mlsStatus }, photosTrashed: wixSrcs.length, failStreak, stagedSince: row._createdDate || null, wasLive: false }
+                    details: { reason: `Status changed to ${mlsStatus}`, reasonCode: 'status_change', mls: { status: mlsStatus }, photosTrashed: wixSrcs.length, failStreak, stagedSince: row._createdDate || null, wasLive: !!live }
                 });
                 return { rowId, status: 'unstaged', processed, failed };
             }
@@ -228,9 +247,19 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
             }
         } catch (err) {
             console.log('processOneStaggingRow rehydrate failed for', rowId, err && err.message);
-            await logEvent('error', 'rehydrate', `Re-fetch from MLSGrid failed for ${row.propertyAddress || rowId}: ${err && err.message ? err.message : err}`, {
-                ...ctx, details: { error: err && err.message ? err.message : String(err), failStreak }
-            });
+            // Same transition throttle as photos_failed, plus a change in the
+            // error text, so an outage costs one event per stuck row, not one
+            // per attempt.
+            const errText = String(err && err.message ? err.message : err).slice(0, 120);
+            const errChanged = errText !== (row.rehydrateErrorSignature || null);
+            if (failStreak === 1 || failStreak % FAIL_EVENT_EVERY === 0 || errChanged) {
+                await logEvent('error', 'rehydrate', `Re-fetch from MLSGrid failed for ${row.propertyAddress || rowId}: ${errText}${failStreak > 1 ? ` (${failStreak} consecutive attempts)` : ''}`, {
+                    ...ctx, details: { error: errText, failStreak }
+                });
+                if (errChanged) {
+                    await wixData.update(STAGGING, { ...row, listingImageGallery: gallery, rehydrateErrorSignature: errText }, { suppressAuth: true }).catch(() => null);
+                }
+            }
         }
         return { rowId, status: 'partial', processed, failed };
     }
@@ -243,7 +272,7 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     // Stagging. Upsert in case HousesforSale already has this _id (handles a
     // re-run or update path).
     const firstWix = gallery.find(g => g && g.src && !g.src.startsWith('http'));
-    const { photoFailStreak, photoFailSignature, lastPhotoFailAt, ...cleanRow } = row;
+    const { photoFailStreak, photoFailSignature, lastPhotoFailAt, rehydrateErrorSignature, ...cleanRow } = row;
     const houseRecord = {
         ...cleanRow,
         listingImageGallery: gallery,
@@ -311,6 +340,7 @@ export async function drainStaggingFanOut(deadline, runKey) {
     let totalFailed = 0;
     let httpErrors = 0;
     let waves = 0;
+    let lateWaves = 0;
     let stalled = false;
     let stalledRows = null;
     const errorSamples = [];
@@ -327,7 +357,12 @@ export async function drainStaggingFanOut(deadline, runKey) {
 
         waves += 1;
         const budgetMs = effectiveDeadline - Date.now();
-        const results = await Promise.all(pending.map(async (row) => {
+        // Children stop before budgetMs on their own, but an in-flight upload
+        // batch or a slow MLSGrid re-fetch can still overrun. Never let a
+        // late child hold this invocation past its deadline: their progress
+        // is durable in their own invocation, so treat them as 'late'.
+        const waveTimeout = new Promise(resolve => setTimeout(() => resolve(null), budgetMs));
+        const waveResults = Promise.all(pending.map(async (row) => {
             try {
                 const r = await fetch(PROCESS_ROW_ENDPOINT, {
                     method: 'POST',
@@ -346,6 +381,13 @@ export async function drainStaggingFanOut(deadline, runKey) {
                 return { rowId: row._id, status: 'fetch_error', error: err && err.message };
             }
         }));
+        const results = await Promise.race([waveResults, waveTimeout]);
+        if (!results) {
+            // Wave timed out: out of budget either way. Not a stall - the
+            // children are still working.
+            lateWaves += 1;
+            break;
+        }
 
         for (const r of results) {
             if (r.status === 'promoted') totalPromoted += 1;
@@ -372,6 +414,6 @@ export async function drainStaggingFanOut(deadline, runKey) {
 
     return {
         promoted: totalPromoted, partial: totalPartial, processed: totalProcessed, failed: totalFailed,
-        httpErrors, errorSamples, stalled, stalledRows, waves
+        httpErrors, errorSamples, stalled, stalledRows, waves, lateWaves
     };
 }

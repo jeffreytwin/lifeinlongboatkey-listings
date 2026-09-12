@@ -49,7 +49,7 @@ Five Wix Data collections. Create in the CMS before first run, with every column
 
 **HousesforSale** (already exists) - the live listings. The pipeline adds `isPublished` (Boolean) and, on rows whose photos are failing, `lastPhotoFailAt` (Date & Time).
 
-**Stagging** - the photo-upload waiting room. Same columns as `HousesforSale` plus `isPublished` (Boolean, always false here) and the failure bookkeeping the drain keeps per row: `photoFailStreak` (Number), `photoFailSignature` (Text), `lastPhotoFailAt` (Date & Time). New listings and photo swaps sit here until every photo is Wix-hosted, then promote. Rows are removed when their listing leaves the market (hourly, nightly, or by the drain itself when it re-checks a failing row).
+**Stagging** - the photo-upload waiting room. Same columns as `HousesforSale` plus `isPublished` (Boolean, always false here) and the failure bookkeeping the drain keeps per row: `photoFailStreak` (Number), `photoFailSignature` (Text), `lastPhotoFailAt` (Date & Time), `rehydrateErrorSignature` (Text). New listings and photo swaps sit here until every photo is Wix-hosted, then promote. Rows are removed when their listing leaves the market (hourly, nightly, or by the drain itself when it re-checks a failing row).
 
 **Villages** - subdivision-to-village metadata. Columns:
 
@@ -118,7 +118,7 @@ Permissions: admin read-only; backend writes. Retention: 30 days.
 | `delete` | info / warn | live row removed; message ends with the reason and `details.reasonCode` is one of `status_change` (info), `property_type` (info), `no_village` (warn: fix `Villages`), `city_change` (warn), `mls_revoked` (warn: MLSGrid's `MlgCanView` is false), `not_in_feed` (warn: the nightly found MLSGrid no longer returns it), `manual_refresh` (a forced rebuild). `details.mls` carries the MLS status/subdivision/city/price at removal time |
 | `unstage` | info / warn | a staged, never-published listing dropped for the same reasons |
 | `promote` | info | Stagging row published to HousesforSale (new listing or photo swap) |
-| `photos_failed` | warn | photo uploads failed for one listing: how many, first error, sample URLs. Written on the first failure, then every 10th consecutive attempt or when the error changes, so one stuck row cannot flood the log |
+| `photos_failed` | warn | photo uploads failed for one listing: how many, first error, sample URLs. Written on the first failure, then every 10th consecutive attempt or when the error changes, so one stuck row cannot flood the log. During the row-write loops the run also flushes events and updates its row every 25 writes or 8 seconds, so a killed run keeps most of its trail |
 | `photos_recovered` | info | uploads succeeded again after a failing streak |
 | `rehydrate` | info / warn / error | every photo failed so fresh URLs were fetched from MLSGrid (warn if MLSGrid had none, error if the fetch failed); same throttle as `photos_failed` |
 | `promote_failed` | error | HousesforSale write failed at promotion |
@@ -127,6 +127,7 @@ Permissions: admin read-only; backend writes. Retention: 30 days.
 | `drain_stalled` | warn | a drain wave made no progress and stopped early |
 | `mass_delete_guard` | error | a full run wanted to delete 10%+ of the inventory and refused; `details.sample` lists candidates by reason |
 | `stats_failed` | error | village range stats refresh threw (run still ok) |
+| `sweep_failed` | error | the dateOfMlsPull sweep threw (run still ok) |
 | `budget` | warn | the run ran out of time before the pull-date sweep or the stats refresh |
 | `gap` | warn | more than 120 min passed with no run recorded (the scheduler was silent) |
 | `run_error` | error | the run threw: stage, error, counts written so far |
@@ -295,7 +296,7 @@ curl "https://<site>/_functions/syncEvents?level=warn&limit=100&since=2026-09-01
   -H "x-monitor-secret: $MONITOR_FEED_SECRET"
 ```
 
-Params: `since` (inclusive), `before` (exclusive; use the response's `nextBefore` to page older), `level` (minimum), `limit` (max 500), and exact-match `kind`, `listingId`, `runKey`, `mode`. Response carries `newestAt` (use as the next `since`), `hasMore` / `truncated`, and every event's `id` for de-duplication. An unparsable `since` returns `{ error }` with no events.
+Params: `since` and `before` (both inclusive), `skip` (exact paging offset; the response's `nextSkip` is the next page), `level` (minimum), `limit` (max 500), and exact-match `kind`, `listingId`, `runKey`, `mode`. Results are ordered by `at` then `id`, newest first. Response carries `newestAt` (use as the next `since`), `hasMore` / `truncated`, `nextSkip`, `nextBefore`, and every event's `id`. Page a window with `since` + `skip`; `before` is a coarse cursor only, because timestamps are not unique (events written back-to-back share a millisecond), so when using it dedupe on `id`. An unparsable `since` returns `{ error }` with no events.
 
 ### Frontlines integration (other repo)
 
