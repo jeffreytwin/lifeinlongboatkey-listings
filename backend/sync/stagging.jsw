@@ -13,10 +13,11 @@ const PARALLEL_UPLOADS = 10;
 // row read/write that bookend the uploads.
 const PER_ROW_DEADLINE_MS = 50 * 1000;
 // A parent (cron/runSync) awaiting a wave must not be held past its own
-// kill: it passes budgetMs and the child stops CHILD_MARGIN_MS before it.
-const CHILD_MARGIN_MS = 5 * 1000;
-// Don't start a wave with less than this left - one upload batch needs
-// about this long. Children honour budgetMs, so waves can be short.
+// kill: it races each wave against its remaining budget and moves on;
+// children keep working in their own invocations.
+// The first wave is dispatched whenever any time remains (dispatch is
+// what matters - children have their own budget); later waves need this
+// much left so their results can be collected.
 const MIN_WAVE_BUDGET_MS = 8 * 1000;
 // Skip the post-loop MLSGrid re-fetch when less than this remains: it is
 // the one thing after the upload loop that can take seconds.
@@ -99,8 +100,9 @@ export async function getPendingStaggingRows(limit) {
 // for durability, then if the gallery is fully wix-hosted promote the row to
 // HousesforSale and delete it from Stagging.
 // runKey (optional): the run whose fan-out dispatched this call, so the
-// events written here join to it. budgetMs (optional): how long the caller
-// can wait; the upload loop stops CHILD_MARGIN_MS before that.
+// events written here join to it. budgetMs (optional, informational): how
+// long the caller will wait for the result; the child keeps its own full
+// budget because its progress is durable whether or not the caller waits.
 export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     if (!rowId) return { rowId, status: 'no_id', processed: 0, failed: 0 };
 
@@ -116,8 +118,11 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     let processed = 0;
     let failed = 0;
     const failures = []; // { url, error } samples for the event log
-    const budget = typeof budgetMs === 'number' && budgetMs > 0 ? Math.min(PER_ROW_DEADLINE_MS, budgetMs - CHILD_MARGIN_MS) : PER_ROW_DEADLINE_MS;
-    const deadline = Date.now() + Math.max(budget, 1000);
+    // The child runs in its own invocation with its own budget. The parent
+    // does not wait past its deadline (it races each wave), so the child
+    // is not shortened to the parent's remaining time: a wave dispatched
+    // late still gets a full upload budget and its progress is durable.
+    const deadline = Date.now() + PER_ROW_DEADLINE_MS;
     const ctx = { listingId: rowId, address: row.propertyAddress, village: row.village, mode: 'drain', runKey: runKey || null };
     // Failure bookkeeping carried on the row (see FAIL_EVENT_EVERY).
     let failStreak = typeof row.photoFailStreak === 'number' ? row.photoFailStreak : 0;
@@ -345,15 +350,22 @@ export async function drainStaggingFanOut(deadline, runKey) {
     let stalledRows = null;
     const errorSamples = [];
 
-    // Only start a wave with enough time for it to finish: each child is
-    // told the remaining budget and stops before it.
-    while (effectiveDeadline - Date.now() >= MIN_WAVE_BUDGET_MS) {
-        // Each iteration pulls the next FAN_OUT_PARALLEL pending rows and
-        // dispatches concurrent per-row HTTP calls. wixData query happens
-        // every loop so a row that was promoted by a previous wave isn't
-        // re-picked.
-        const pending = await getPendingStaggingRows(FAN_OUT_PARALLEL);
+    // Each row is attempted at most once per invocation: a row that came
+    // back 'rehydrated' or 'partial' would otherwise be re-picked (oldest
+    // first) wave after wave, burning the budget on one dead-URL listing
+    // and making "every 10th attempt" mean every 10th wave, not tick.
+    const tried = new Set();
+    while (true) {
+        const remaining = effectiveDeadline - Date.now();
+        if (remaining <= 0) break;
+        if (waves > 0 && remaining < MIN_WAVE_BUDGET_MS) break;
+        // Each iteration pulls the next FAN_OUT_PARALLEL pending rows not yet
+        // tried and dispatches concurrent per-row HTTP calls. The query runs
+        // every loop so a row promoted by a previous wave isn't re-picked.
+        const candidates = await getPendingStaggingRows(FAN_OUT_PARALLEL + tried.size);
+        const pending = candidates.filter(r => !tried.has(r._id)).slice(0, FAN_OUT_PARALLEL);
         if (!pending.length) break;
+        for (const r of pending) tried.add(r._id);
 
         waves += 1;
         const budgetMs = effectiveDeadline - Date.now();

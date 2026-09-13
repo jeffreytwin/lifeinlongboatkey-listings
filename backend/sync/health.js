@@ -195,9 +195,14 @@ async function stuckStagging(now) {
         .limit(STAGGING_SCAN)
         .find({ suppressAuth: true });
     let legacy = 0;
+    let oldestLegacyAt = null;
     const rows = [];
     for (const row of res.items) {
-        if (!isPipelineRow(row)) { legacy += 1; continue; }
+        if (!isPipelineRow(row)) {
+            legacy += 1;
+            if (row._createdDate && (!oldestLegacyAt || new Date(row._createdDate) < new Date(oldestLegacyAt))) oldestLegacyAt = row._createdDate;
+            continue;
+        }
         const gallery = Array.isArray(row.listingImageGallery) ? row.listingImageGallery : [];
         const pending = gallery.filter(isPendingPhoto).length;
         const ageHours = row._createdDate ? hoursBetween(now, row._createdDate) : null;
@@ -231,6 +236,7 @@ async function stuckStagging(now) {
         scanned: res.items.length,
         pipelineRows: rows.length,
         legacyRows: legacy,
+        oldestLegacyAt,
         stuck
     };
 }
@@ -306,7 +312,7 @@ function buildAlerts(ctx) {
     }
 
     if (counts.housesForSale === 0) {
-        add('critical', 'ZERO_INVENTORY', 'HousesforSale is empty: the site is showing no listings', {});
+        add('critical', 'ZERO_INVENTORY', 'HousesforSale is empty: the site is showing no listings', { since: lastRun.startedAt });
     }
 
     // Mass delete: any run in the last 24h, not just the newest, so a wipe
@@ -359,12 +365,12 @@ function buildAlerts(ctx) {
         });
     }
     if (stuck.legacyRows > 0) {
-        add('info', 'STAGGING_LEGACY_ROWS', `${stuck.legacyRows} legacy (Redfin-audit) rows sit in Stagging; the drain skips them but they cost a wasted wave each hour. Bulk-delete when the audit is done`, { count: stuck.legacyRows });
+        add('info', 'STAGGING_LEGACY_ROWS', `${stuck.legacyRows} legacy (Redfin-audit) rows sit in Stagging; the drain skips them but they cost a wasted wave each hour. Bulk-delete when the audit is done`, { since: stuck.oldestLegacyAt || undefined, count: stuck.legacyRows });
     }
 
     if (counts.stalePullDates != null && counts.stalePullDates > 0) {
         const share = live ? counts.stalePullDates / live : 1;
-        add(share > MASS_DELETE_SHARE ? 'critical' : 'warning', 'STALE_PULL_DATES', `${counts.stalePullDates} live listing${counts.stalePullDates === 1 ? '' : 's'} carry a dateOfMlsPull older than ${PULL_DATE_MAX_HOURS}h (MLSGrid compliance); the end-of-run sweep is not completing`, { count: counts.stalePullDates });
+        add(share > MASS_DELETE_SHARE ? 'critical' : 'warning', 'STALE_PULL_DATES', `${counts.stalePullDates} live listing${counts.stalePullDates === 1 ? '' : 's'} carry a dateOfMlsPull older than ${PULL_DATE_MAX_HOURS}h (MLSGrid compliance); the end-of-run sweep is not completing`, { since: lastOkRun ? lastOkRun.startedAt : lastRun.startedAt, count: counts.stalePullDates });
     }
 
     const sixHoursAgo = now.getTime() - STATS_STALE_HOURS * 3600000;
@@ -385,7 +391,7 @@ function buildAlerts(ctx) {
     }
 
     if (counts.published != null && counts.housesForSale != null && counts.published < counts.housesForSale) {
-        add('info', 'UNPUBLISHED_LIVE_ROWS', `${counts.housesForSale - counts.published} HousesforSale rows are not flagged published`, { count: counts.housesForSale - counts.published });
+        add('info', 'UNPUBLISHED_LIVE_ROWS', `${counts.housesForSale - counts.published} HousesforSale rows are not flagged published`, { since: lastRun.startedAt, count: counts.housesForSale - counts.published });
     }
 
     return alerts;

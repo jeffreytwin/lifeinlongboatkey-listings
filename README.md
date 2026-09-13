@@ -7,7 +7,7 @@ Automated Longboat Key listings pipeline for Wix Velo. Replaces the former manua
 Four scheduled jobs in `backend/jobs.config`:
 
 - **Hourly incremental** (`0 * * * *`) - Pulls every Longboat Key record whose `ModificationTimestamp` is newer than the last successful run. Active + matched-village records upsert into `HousesforSale`; any other status (Pending, Sold, Withdrawn, etc.) triggers removal.
-- **Nightly full reconcile** (`30 3 * * *` UTC) - Re-fetches every listing currently in `HousesforSale` (and every pipeline-staged row) by id and deletes anything MLSGrid no longer returns as an Active, matched-village listing. Safety net for rare outright deletions and drift. A run that would delete 10% or more of the inventory (min 10) stops itself and records the candidates instead (see "Mass-delete guard").
+- **Nightly full reconcile** (`30 3 * * *` UTC) - Re-fetches every listing currently in `HousesforSale` (and every pipeline-staged row) by id and deletes anything MLSGrid no longer returns as an Active, matched-village listing. Safety net for rare outright deletions and drift. A run that would delete 10% or more of the inventory (min 10) stops itself and records the candidates instead (see "Mass-delete guard"). The hourly watermark comes from the newest successful incremental run only, so a full run never advances it.
 - **Nightly retention purge** (`30 4 * * *` UTC) - Deletes `SyncRuns` older than 90 days (never below the newest 50) and `SyncEvents` older than 30 days.
 - **Photo drain** (`* * * * *` as committed) - Uploads pending photos for staged listings and publishes them when complete. Wix only honours the interval your plan allows; if the scheduler ignores this entry the hourly run still drains photos in its own budget.
 
@@ -74,7 +74,7 @@ Permissions: admin read/write only.
 | `durationMs` | Number | |
 | `mode` | Text | `incremental` or `full` |
 | `status` | Text | `running` (row is inserted at run start), then `ok` or `error`. A row left at `running` means the invocation was killed by the Wix timeout; `stage` says where |
-| `stage` | Text | current/last phase: `gap-check`, `fetch`, `classify`, `plan`, `write`, `photos`, `dates`, `stats`, `record`, `done` |
+| `stage` | Text | last persisted phase: `fetch` (row inserted), `write` (row writes, refreshed every 25 writes / 8s), `sweeps` (pull-date + stats sweeps), `photos` (drain), `done`. `errorStage` can additionally name `gap-check`, `classify`, `plan`, `dates`, `stats`, `record` |
 | `inserted`, `updated`, `deleted`, `promoted` | Number | |
 | `listingsChanged` | Number | inserted + updated + deleted |
 | `imagesUploaded`, `imagesFailed`, `imagesTrashed` | Number | `imagesFailed` counts individual photo uploads that failed after retries; a stuck Stagging row is counted again every run until it clears |
@@ -101,7 +101,7 @@ Permissions: admin read-only; backend writes. Retention: 90 days, never fewer th
 
 | field | type | notes |
 | --- | --- | --- |
-| `runKey` | Text | the run that wrote it (null for drain/media/retention contexts) |
+| `runKey` | Text | the run that wrote it. Drain/media events fired from a run carry that run's key (null only when fired by the standalone per-minute drain); purge events carry `retention:<startedAt ISO>`, which has no `SyncRuns` row |
 | `mode` | Text | `incremental`, `full`, `drain` (Stagging HTTP fan-out), `media` (live-row queue), `retention` |
 | `at` | Date & Time | |
 | `level` | Text | `info`, `warn`, `error` |
@@ -120,7 +120,7 @@ Permissions: admin read-only; backend writes. Retention: 30 days.
 | `unstage` | info / warn | a staged, never-published listing dropped for the same reasons |
 | `restage` | info | the nightly refreshed a staged, never-published listing and it gained photos it had been staged without |
 | `promote` | info | Stagging row published to HousesforSale (new listing or photo swap) |
-| `photos_failed` | warn | photo uploads failed for one listing: how many, first error, sample URLs. Written on the first failure, then every 10th consecutive attempt or when the error changes, so one stuck row cannot flood the log. During the row-write loops the run also flushes events and updates its row every 25 writes or 8 seconds, so a killed run keeps most of its trail |
+| `photos_failed` | warn | photo uploads failed for one listing: how many, first error, sample URLs. Written on the first failure, then every 10th consecutive attempt or when the error changes (a row is attempted at most once per drain invocation), so one stuck row cannot flood the log |
 | `photos_recovered` | info | uploads succeeded again after a failing streak |
 | `rehydrate` | info / warn / error | every photo failed so fresh URLs were fetched from MLSGrid (warn if MLSGrid had none, error if the fetch failed); same throttle as `photos_failed` |
 | `promote_failed` | error | HousesforSale write failed at promotion |
@@ -258,7 +258,7 @@ Query params: `events` (recent events to include, default 50, max 200), `level` 
 | `feedErrors` | sections the feed could not read (missing collection or field); the feed still returns 200 |
 | `alerts` | `[{ severity, code, key, message, since, count?, ... }]` |
 
-Alert codes. Dedupe on `site.key + key` (`key` is the code, or `code:listingId` for per-listing alerts); `since` is always populated and marks when the condition started, so a clear-then-reappear is a new incident. Notify on transitions, not every poll.
+Alert codes. Dedupe on `site.key + key` (`key` equals `code` today; per-listing detail such as `listingIds` rides in the alert data). `since` is always populated: for run- and row-derived alerts it marks when the condition started, so a clear-then-reappear is a new incident; for feed-level alerts (`MISCONFIGURED`, `SITE_IDENTITY_MISMATCH`, `NO_RUNS_RECORDED`) it is the poll time. Notify on transitions, not every poll.
 
 | code | severity | rule |
 | --- | --- | --- |
@@ -312,7 +312,7 @@ A full reconcile that would delete `max(10, 10%)` of the live inventory does not
 curl -X POST "https://<site>/_functions/runSync?mode=full&force=1" -H "x-sync-secret: $SYNC_TRIGGER_SECRET"
 ```
 
-Incremental runs are not guarded (their removals each carry a specific MLS status change).
+Incremental runs guard only data-driven removals (`city_change`, `no_village`, `mls_revoked`) as a group at the same threshold, since a burst of those is what a feed hiccup or a Villages mis-edit looks like; status-change removals always apply. A blank City on a held listing is ignored by the hourly run and only becomes a (guarded) removal in the nightly.
 
 ### Retention
 

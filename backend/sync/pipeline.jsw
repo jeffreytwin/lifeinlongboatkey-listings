@@ -353,9 +353,13 @@ function describeItem(item) {
     return parts.join(', ');
 }
 
+// Incremental watermark: the newest successful INCREMENTAL run. A full run
+// must not advance it - it only re-fetches ids we already hold, so a new
+// listing that first appears between an incremental and a later full run
+// would otherwise never be pulled.
 async function getLastSuccessfulRunAt() {
     try {
-        const res = await wixData.query(RUNS).eq('status', 'ok').descending('startedAt').limit(1).find({ suppressAuth: true });
+        const res = await wixData.query(RUNS).eq('status', 'ok').eq('mode', 'incremental').descending('startedAt').limit(1).find({ suppressAuth: true });
         if (res.items.length) return new Date(res.items[0].startedAt);
     } catch (err) {
         console.log('getLastSuccessfulRunAt error', err && err.message);
@@ -374,7 +378,7 @@ async function getLastSuccessfulRunAt() {
 // city change is only a removal for a listing we hold; in incremental mode
 // the feed is MLS-wide and the thousands of non-local records are simply
 // skipped. Without knownIds (bootstrap/tests) city mismatches are skipped.
-async function classify(mlsItems, { knownIds = null } = {}) {
+async function classify(mlsItems, { knownIds = null, emptyCityIsRemoval = false } = {}) {
     const upsertRaw = [];
     const removals = [];
     const removal = (raw, reasonCode, reason) => {
@@ -416,9 +420,14 @@ async function classify(mlsItems, { knownIds = null } = {}) {
         const city = cityRaw.toLowerCase();
         if (city !== POSTAL_CITY) {
             if (knownIds && knownIds.has(raw.ListingId)) {
-                removal(raw, 'city_change', cityRaw
-                    ? `City is now "${cityRaw}" (listing moved outside the site's market)`
-                    : 'City is missing from the MLS record (cannot confirm it is in the site\'s market)');
+                if (cityRaw) {
+                    removal(raw, 'city_change', `City is now "${cityRaw}" (listing moved outside the site's market)`);
+                } else if (emptyCityIsRemoval) {
+                    // Full mode only (guarded): a blank City on a held listing
+                    // cannot be confirmed as in-market. Hourly runs leave the
+                    // live row alone - a feed hiccup must not delete inventory.
+                    removal(raw, 'city_change', 'City is missing from the MLS record (cannot confirm it is in the site\'s market)');
+                }
             }
             continue;
         }
@@ -1076,6 +1085,9 @@ async function refreshAllDateOfMlsPull(deadline) {
 // apply them.
 const MASS_DELETE_MIN = 10;
 const MASS_DELETE_SHARE = 0.10;
+// Removal reasons that come from data flags rather than an MLS status
+// change; in hourly runs these are guarded as a group (see runSync).
+const DATA_DRIVEN_REASONS = new Set(['city_change', 'no_village', 'mls_revoked', 'not_in_feed']);
 
 // options.trigger: 'cron' | 'http' | 'page' | 'manual' (recorded on the run
 // row). options.allowMassDelete: bypass the full-mode delete guard.
@@ -1176,7 +1188,7 @@ export async function runSync(mode, options = {}) {
         counts.mlsGridItemsFetched = items.length;
 
         setStage('classify');
-        const { upsertRaw, removals } = await classify(items, { knownIds });
+        const { upsertRaw, removals } = await classify(items, { knownIds, emptyCityIsRemoval: mode === 'full' });
         const upserts = upsertRaw.map(({ raw, village }) => transformListing(raw, village));
 
         setStage('plan');
@@ -1204,6 +1216,30 @@ export async function runSync(mode, options = {}) {
                 });
                 plan.toDelete = [];
                 plan.toUnstage = [];
+            }
+        }
+
+        // Hourly runs: status changes are individually trustworthy, but a
+        // burst of data-driven removals (city/village/display-rights flags)
+        // is what a feed hiccup or a Villages mis-edit looks like. Hold those
+        // back above the same threshold; the guarded nightly re-evaluates.
+        if (mode === 'incremental' && plan.toDelete.length) {
+            const dataDriven = plan.toDelete.filter(d => DATA_DRIVEN_REASONS.has(d.removal && d.removal.reasonCode));
+            const threshold = Math.max(MASS_DELETE_MIN, Math.ceil((knownIds ? knownIds.size : 0) * MASS_DELETE_SHARE));
+            if (dataDriven.length >= threshold && !(options && options.allowMassDelete)) {
+                const heldIds = new Set(dataDriven.map(d => d.prev._id));
+                counts.deletesSkipped = dataDriven.length;
+                log.error('mass_delete_guard', `Incremental run wanted to delete ${dataDriven.length} live listings for data reasons (city/village/display flags; guard threshold ${threshold}); those were NOT applied and will be re-evaluated by the nightly full. Status-change removals still applied`, {
+                    details: {
+                        candidates: dataDriven.length,
+                        threshold,
+                        live: knownIds ? knownIds.size : null,
+                        byReason: dataDriven.reduce((acc, d) => { const k = (d.removal && d.removal.reasonCode) || 'unspecified'; acc[k] = (acc[k] || 0) + 1; return acc; }, {}),
+                        sample: dataDriven.slice(0, 100).map(d => ({ id: d.prev._id, address: d.prev.propertyAddress, reasonCode: d.removal && d.removal.reasonCode, reason: d.reason }))
+                    }
+                });
+                plan.toDelete = plan.toDelete.filter(d => !heldIds.has(d.prev._id));
+                plan.toUnstage = (plan.toUnstage || []).filter(u => !DATA_DRIVEN_REASONS.has(u.removal && u.removal.reasonCode));
             }
         }
 

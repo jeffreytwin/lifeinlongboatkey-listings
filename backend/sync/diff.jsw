@@ -228,9 +228,20 @@ async function planUnstage(removals, liveIds) {
     const toUnstage = [];
     for (const r of candidates) {
         const prev = staged.get(r.id);
-        if (prev) toUnstage.push({ prev, removal: r, reason: r.reason });
+        // Legacy Redfin-audit rows (no isPublished flag, raw media objects)
+        // are not this pipeline's to drop; see README "Auditing".
+        if (prev && isPipelineStaggingRow(prev)) toUnstage.push({ prev, removal: r, reason: r.reason });
     }
     return toUnstage;
+}
+
+// Same test as pipeline.jsw's fetchLivePipelineStaggingIds and compare.jsw's
+// isLivePipelineRow: rows this pipeline wrote carry isPublished.
+function isPipelineStaggingRow(row) {
+    if (Object.prototype.hasOwnProperty.call(row, 'isPublished')) return true;
+    const g = row.listingImageGallery;
+    if (Array.isArray(g) && g.length) return typeof g[0].src === 'string';
+    return false;
 }
 
 export async function planIncremental(incomingUpserts, incomingRemovals) {
