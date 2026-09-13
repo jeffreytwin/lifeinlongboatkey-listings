@@ -1,7 +1,7 @@
 import wixData from 'wix-data';
 import { fetch } from 'wix-fetch';
 import { getSecret } from 'wix-secrets-backend';
-import { uploadWithRetry, trashMedia, isRateLimited, RATE_LIMITED_PARALLEL, RATE_LIMIT_PAUSE_MS } from 'backend/sync/media';
+import { uploadWithRetryInfo, trashMedia, isRateLimited, RATE_LIMITED_PARALLEL, RATE_LIMIT_PAUSE_MS } from 'backend/sync/media';
 import { hydrateListing } from 'backend/sync/mlsgrid';
 import { logEvent } from 'backend/sync/events.js';
 import { SITE_URL } from 'backend/sync/site-config.js';
@@ -35,6 +35,8 @@ const PROCESS_ROW_ENDPOINT = `${SITE_URL}/_functions/processStaggingRow`;
 function isPending(item) {
     return !!(item && typeof item.src === 'string' && item.src.startsWith('http'));
 }
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function isGalleryComplete(gallery) {
     if (!Array.isArray(gallery) || !gallery.length) return false;
@@ -143,8 +145,9 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
             const item = gallery[idx];
             const mlsUrl = item.src;
             try {
-                const wixUrl = await uploadWithRetry(mlsUrl);
-                return { idx, wixUrl, mlsUrl, ok: true };
+                const up = await uploadWithRetryInfo(mlsUrl);
+                if (up.rateLimited) rateLimitedBatch = true;
+                return { idx, wixUrl: up.fileUrl, mlsUrl, ok: true };
             } catch (err) {
                 console.log('processOneStaggingRow upload failed', mlsUrl, err && err.message);
                 if (failures.length < 5) failures.push({ url: mlsUrl, error: err && err.message ? err.message : String(err) });
