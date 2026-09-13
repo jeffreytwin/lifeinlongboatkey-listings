@@ -208,8 +208,10 @@ async function stuckStagging(now) {
         const ageHours = row._createdDate ? hoursBetween(now, row._createdDate) : null;
         const failStreak = typeof row.photoFailStreak === 'number' ? row.photoFailStreak : 0;
         const lastFailHours = row.lastPhotoFailAt ? hoursBetween(now, row.lastPhotoFailAt) : null;
+        const retryAfter = row.photoRetryAfter && new Date(row.photoRetryAfter).getTime() > now.getTime() ? row.photoRetryAfter : null;
         let diagnosis;
-        if (gallery.length === 0) diagnosis = 'empty gallery: staged when MLSGrid sent no photos; nothing to upload so it never publishes (delete the row, or wait for the listing to change in the MLS)';
+        if (retryAfter) diagnosis = `MLSGrid media rate-limited this gallery (HTTP 429, ${failStreak} consecutive attempts); paused until ${new Date(retryAfter).toISOString()} and then retried`;
+        else if (gallery.length === 0) diagnosis = 'empty gallery: staged when MLSGrid sent no photos; nothing to upload so it never publishes (delete the row, or wait for the listing to change in the MLS)';
         else if (pending === 0) diagnosis = 'all photos hosted but not promoted: promotion is failing, see promote_failed events';
         else if (failStreak > 0 && /\b429\b|too many requests/i.test(row.photoFailSignature || '')) diagnosis = `MLSGrid media is rate-limiting this gallery (HTTP 429, ${failStreak} consecutive attempts); the drain retries at lower concurrency and it should complete on its own`;
         else if (failStreak > 0) diagnosis = `photos keep failing to upload (${failStreak} consecutive attempts${row.photoFailSignature ? `: ${row.photoFailSignature}` : ''}); see photos_failed events`;
@@ -227,6 +229,7 @@ async function stuckStagging(now) {
             pendingPhotos: pending,
             galleryEmpty: gallery.length === 0,
             failStreak,
+            retryAfter,
             lastFailAt: row.lastPhotoFailAt || null,
             lastError: row.photoFailSignature || null,
             diagnosis

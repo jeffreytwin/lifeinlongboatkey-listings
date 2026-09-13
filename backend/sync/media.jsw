@@ -42,6 +42,22 @@ export function isRateLimited(err) {
 const RATE_LIMIT_BACKOFF_MS = 2000;
 export const RATE_LIMITED_PARALLEL = 2;
 export const RATE_LIMIT_PAUSE_MS = 3000;
+// Observed: once MLSGrid starts answering 429, it keeps doing so for a
+// while even at 2 parallel with pauses. So after a rate-limited attempt a
+// row is left alone for a cooldown that doubles with each consecutive
+// rate-limited attempt: 5, 10, 20, 40, 60 (cap) minutes.
+export function rateLimitCooldownMs(streak) {
+    const n = Math.max(1, streak || 1);
+    return Math.min(60, 5 * Math.pow(2, n - 1)) * 60 * 1000;
+}
+
+// The image library throws plain strings, not Error objects. Normalize so
+// callers can read .message and attach fields.
+function toError(err) {
+    if (err instanceof Error) return err;
+    const e = new Error(err && err.message ? String(err.message) : String(err));
+    return e;
+}
 
 async function uploadOne(url) {
     const encoded = await dataURLdecoder.encodeFromURL(url);
@@ -72,8 +88,9 @@ export async function uploadWithRetryInfo(url) {
             }
         }
     }
-    lastErr.rateLimited = rateLimited;
-    throw lastErr;
+    const e = toError(lastErr);
+    e.rateLimited = rateLimited;
+    throw e;
 }
 
 export async function uploadWithRetry(url) {
