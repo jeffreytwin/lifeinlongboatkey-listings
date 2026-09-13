@@ -1,7 +1,7 @@
 import wixData from 'wix-data';
 import { fetch } from 'wix-fetch';
 import { getSecret } from 'wix-secrets-backend';
-import { uploadWithRetryInfo, trashMedia, isRateLimited, rateLimitCooldownMs, RATE_LIMITED_PARALLEL, RATE_LIMIT_PAUSE_MS } from 'backend/sync/media';
+import { uploadWithRetryInfo, trashMedia } from 'backend/sync/media';
 import { hydrateListing } from 'backend/sync/mlsgrid';
 import { logEvent } from 'backend/sync/events.js';
 import { SITE_URL } from 'backend/sync/site-config.js';
@@ -37,6 +37,25 @@ function isPending(item) {
 }
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Rate-limit helpers, kept local on purpose. Wix wraps every function
+// exported from a .jsw in a web-method proxy that returns a Promise when
+// called from another module, so importing media.jsw's isRateLimited /
+// rateLimitCooldownMs here made every failure look rate-limited (a Promise
+// is truthy) and turned the cooldown into NaN ("pausing for NaN min",
+// photoRetryAfter null). Only awaited async functions and plain data may
+// cross a .jsw boundary; these must stay in sync with media.jsw.
+function isRateLimitedLocal(err) {
+    const m = err && err.message ? String(err.message) : String(err || '');
+    return /\b429\b|too many requests/i.test(m);
+}
+const RATE_LIMITED_PARALLEL = 2;
+const RATE_LIMIT_PAUSE_MS = 3000;
+// 5, 10, 20, 40, 60 (cap) minutes by consecutive rate-limited attempt.
+function rateLimitCooldownMsLocal(streak) {
+    const n = Math.max(1, Number(streak) || 1);
+    return Math.min(60, 5 * Math.pow(2, n - 1)) * 60 * 1000;
+}
 
 function isGalleryComplete(gallery) {
     if (!Array.isArray(gallery) || !gallery.length) return false;
@@ -141,7 +160,7 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     // Adaptive concurrency: MLSGrid's media server answers bursts with HTTP
     // 429. After the first rate-limited batch the row continues at
     // RATE_LIMITED_PARALLEL with a pause, so the rest of a big gallery still
-    // lands instead of failing wholesale (see media.jsw isRateLimited).
+    // lands instead of failing wholesale (see isRateLimitedLocal).
     let rateLimitedRow = false;
     let rateLimitedBatches = 0;
     let parallel = PARALLEL_UPLOADS;
@@ -160,7 +179,7 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
             } catch (err) {
                 console.log('processOneStaggingRow upload failed', mlsUrl, err && err.message);
                 if (failures.length < 5) failures.push({ url: mlsUrl, error: err && err.message ? err.message : String(err) });
-                if (isRateLimited(err)) rateLimitedBatch = true;
+                if (isRateLimitedLocal(err)) rateLimitedBatch = true;
                 return { idx, ok: false };
             }
         }));
@@ -195,7 +214,7 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     let failState = null;
     if (failed > 0 && processed === 0) {
         failStreak += 1;
-        const cooldownMs = rateLimitedRow ? rateLimitCooldownMs(failStreak) : 0;
+        const cooldownMs = rateLimitedRow ? rateLimitCooldownMsLocal(failStreak) : 0;
         const retryAfter = cooldownMs ? new Date(Date.now() + cooldownMs) : null;
         failState = { photoFailStreak: failStreak, photoFailSignature: signature, lastPhotoFailAt: new Date(), photoRetryAfter: retryAfter };
         const transition = failStreak === 1 || failStreak % FAIL_EVENT_EVERY === 0 || (signature && signature !== prevSignature);
@@ -210,7 +229,7 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     } else if (failed > 0) {
         // Partial progress: not a streak, one note the first time only. A
         // rate limit mid-gallery still earns a (short) cooldown.
-        const cooldownMs = rateLimitedRow ? rateLimitCooldownMs(1) : 0;
+        const cooldownMs = rateLimitedRow ? rateLimitCooldownMsLocal(1) : 0;
         failState = { photoFailStreak: 0, photoFailSignature: signature, lastPhotoFailAt: new Date(), photoRetryAfter: cooldownMs ? new Date(Date.now() + cooldownMs) : null };
         if (failStreak === 0 && !prevSignature) {
             await logEvent('warn', 'photos_failed', `${failed} of ${pendingIdxs.length} pending photo${pendingIdxs.length === 1 ? '' : 's'} failed to upload for ${row.propertyAddress || rowId}${signature ? `: ${signature}` : ''}; ${processed} succeeded, the rest will be retried`, {
