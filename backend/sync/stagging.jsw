@@ -1,7 +1,7 @@
 import wixData from 'wix-data';
 import { fetch } from 'wix-fetch';
 import { getSecret } from 'wix-secrets-backend';
-import { uploadWithRetry, trashMedia } from 'backend/sync/media';
+import { uploadWithRetry, trashMedia, isRateLimited, RATE_LIMITED_PARALLEL, RATE_LIMIT_PAUSE_MS } from 'backend/sync/media';
 import { hydrateListing } from 'backend/sync/mlsgrid';
 import { logEvent } from 'backend/sync/events.js';
 import { SITE_URL } from 'backend/sync/site-config.js';
@@ -128,8 +128,17 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     let failStreak = typeof row.photoFailStreak === 'number' ? row.photoFailStreak : 0;
     const prevSignature = row.photoFailSignature || null;
 
-    for (let b = 0; b < pendingIdxs.length && Date.now() < deadline; b += PARALLEL_UPLOADS) {
-        const batch = pendingIdxs.slice(b, b + PARALLEL_UPLOADS);
+    // Adaptive concurrency: MLSGrid's media server answers bursts with HTTP
+    // 429. After the first rate-limited batch the row continues at
+    // RATE_LIMITED_PARALLEL with a pause, so the rest of a big gallery still
+    // lands instead of failing wholesale (see media.jsw isRateLimited).
+    let rateLimitedRow = false;
+    let parallel = PARALLEL_UPLOADS;
+    let b = 0;
+    while (b < pendingIdxs.length && Date.now() < deadline) {
+        const batch = pendingIdxs.slice(b, b + parallel);
+        b += batch.length;
+        let rateLimitedBatch = false;
         const results = await Promise.all(batch.map(async (idx) => {
             const item = gallery[idx];
             const mlsUrl = item.src;
@@ -139,6 +148,7 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
             } catch (err) {
                 console.log('processOneStaggingRow upload failed', mlsUrl, err && err.message);
                 if (failures.length < 5) failures.push({ url: mlsUrl, error: err && err.message ? err.message : String(err) });
+                if (isRateLimited(err)) rateLimitedBatch = true;
                 return { idx, ok: false };
             }
         }));
@@ -156,6 +166,11 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
         } catch (err) {
             console.log('Stagging flush failed for', rowId, err && err.message);
         }
+        if (rateLimitedBatch) {
+            rateLimitedRow = true;
+            parallel = RATE_LIMITED_PARALLEL;
+            if (b < pendingIdxs.length && deadline - Date.now() > RATE_LIMIT_PAUSE_MS + 1000) await wait(RATE_LIMIT_PAUSE_MS);
+        }
     }
 
     // Failure state + throttled events. Written with the row's own flush so
@@ -167,9 +182,11 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
         failState = { photoFailStreak: failStreak, photoFailSignature: signature, lastPhotoFailAt: new Date() };
         const transition = failStreak === 1 || failStreak % FAIL_EVENT_EVERY === 0 || (signature && signature !== prevSignature);
         if (transition) {
-            await logEvent('warn', 'photos_failed', `${failed} of ${pendingIdxs.length} pending photo${pendingIdxs.length === 1 ? '' : 's'} failed to upload for ${row.propertyAddress || rowId}${signature ? `: ${signature}` : ''}${failStreak > 1 ? ` (${failStreak} consecutive attempts)` : ''}`, {
+            await logEvent('warn', 'photos_failed', rateLimitedRow
+                ? `MLSGrid media rate-limited (HTTP 429) all ${failed} pending photo${failed === 1 ? '' : 's'} for ${row.propertyAddress || rowId}; retrying at lower concurrency${failStreak > 1 ? ` (${failStreak} consecutive attempts)` : ''}`
+                : `${failed} of ${pendingIdxs.length} pending photo${pendingIdxs.length === 1 ? '' : 's'} failed to upload for ${row.propertyAddress || rowId}${signature ? `: ${signature}` : ''}${failStreak > 1 ? ` (${failStreak} consecutive attempts)` : ''}`, {
                 ...ctx,
-                details: { failed, processed, pending: pendingIdxs.length, galleryTotal: gallery.length, samples: failures, failStreak, stagedSince: row._createdDate || null }
+                details: { failed, processed, pending: pendingIdxs.length, galleryTotal: gallery.length, samples: failures, failStreak, rateLimited: rateLimitedRow, stagedSince: row._createdDate || null }
             });
         }
     } else if (failed > 0) {
@@ -205,6 +222,11 @@ export async function processOneStaggingRow(rowId, runKey, budgetMs) {
     // links forever - unless the listing has left the market, in which case
     // drop it (the nightly full also does this, but here we already know).
     if (pendingIdxs.length && processed === 0 && failed > 0) {
+        if (rateLimitedRow) {
+            // The URLs are fine; MLSGrid throttled us. A re-fetch would only
+            // add another request. Let the next attempt retry more slowly.
+            return { rowId, status: 'partial', processed, failed };
+        }
         if (deadline - Date.now() < HYDRATE_MIN_MS) {
             // Out of budget for the re-fetch; the next attempt does it.
             return { rowId, status: 'partial', processed, failed };
