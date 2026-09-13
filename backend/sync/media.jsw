@@ -30,6 +30,19 @@ const CHAIN_DISPATCH_TIMEOUT_MS = 5000;
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// MLSGrid's media server rate-limits bursts of photo downloads with HTTP
+// 429 (seen on galleries of 30+ photos fetched 10 at a time). The URLs are
+// fine; the fix is to slow down, not to re-fetch them. Retries on a 429
+// back off longer, and once a batch sees one the row continues at
+// RATE_LIMITED_PARALLEL with a pause between batches.
+export function isRateLimited(err) {
+    const m = err && err.message ? String(err.message) : String(err || '');
+    return /\b429\b|too many requests/i.test(m);
+}
+const RATE_LIMIT_BACKOFF_MS = 2000;
+export const RATE_LIMITED_PARALLEL = 2;
+export const RATE_LIMIT_PAUSE_MS = 3000;
+
 async function uploadOne(url) {
     const encoded = await dataURLdecoder.encodeFromURL(url);
     const bufferInfo = await dataURLdecoder.decode(encoded);
@@ -48,7 +61,9 @@ export async function uploadWithRetry(url) {
             return await uploadOne(url);
         } catch (err) {
             lastErr = err;
-            await wait(500 * (attempt + 1));
+            if (attempt < MAX_ATTEMPTS - 1) {
+                await wait((isRateLimited(err) ? RATE_LIMIT_BACKOFF_MS : 500) * (attempt + 1));
+            }
         }
     }
     throw lastErr;
@@ -126,8 +141,12 @@ export async function processMediaQueueStep(deadline, runKey) {
         let rowProcessed = 0;
         let rowFailed = 0; // from actual upload results, never from what was left unattempted
         let firstError = null;
-        for (let b = 0; b < pendingIdxs.length && Date.now() < effectiveDeadline; b += PARALLEL_UPLOADS) {
-            const batch = pendingIdxs.slice(b, b + PARALLEL_UPLOADS);
+        let parallel = PARALLEL_UPLOADS;
+        let b = 0;
+        while (b < pendingIdxs.length && Date.now() < effectiveDeadline) {
+            const batch = pendingIdxs.slice(b, b + parallel);
+            b += batch.length;
+            let rateLimited = false;
             const results = await Promise.all(batch.map(async (idx) => {
                 const item = gallery[idx];
                 const mlsUrl = item.src;
@@ -137,6 +156,7 @@ export async function processMediaQueueStep(deadline, runKey) {
                 } catch (err) {
                     console.log('processMediaQueueStep upload failed', mlsUrl, err && err.message);
                     if (!firstError) firstError = err && err.message ? err.message : String(err);
+                    if (isRateLimited(err)) rateLimited = true;
                     return { idx, ok: false };
                 }
             }));
@@ -151,6 +171,10 @@ export async function processMediaQueueStep(deadline, runKey) {
                 }
             }
             await flushGallery(target, gallery);
+            if (rateLimited && b < pendingIdxs.length) {
+                parallel = RATE_LIMITED_PARALLEL;
+                await wait(RATE_LIMIT_PAUSE_MS);
+            }
         }
         // Throttled failure event (this queue is also driven by the
         // per-minute cron): first failure, then at most once an hour per row.

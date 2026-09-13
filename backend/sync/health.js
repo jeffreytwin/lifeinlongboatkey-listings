@@ -211,6 +211,7 @@ async function stuckStagging(now) {
         let diagnosis;
         if (gallery.length === 0) diagnosis = 'empty gallery: staged when MLSGrid sent no photos; nothing to upload so it never publishes (delete the row, or wait for the listing to change in the MLS)';
         else if (pending === 0) diagnosis = 'all photos hosted but not promoted: promotion is failing, see promote_failed events';
+        else if (failStreak > 0 && /\b429\b|too many requests/i.test(row.photoFailSignature || '')) diagnosis = `MLSGrid media is rate-limiting this gallery (HTTP 429, ${failStreak} consecutive attempts); the drain retries at lower concurrency and it should complete on its own`;
         else if (failStreak > 0) diagnosis = `photos keep failing to upload (${failStreak} consecutive attempts${row.photoFailSignature ? `: ${row.photoFailSignature}` : ''}); see photos_failed events`;
         else if (lastFailHours != null && lastFailHours < 2) diagnosis = 'some photos failing, retrying';
         else diagnosis = 'pending photos never attempted: the drain is not reaching this row (check drain_failed events / SYNC_TRIGGER_SECRET / SITE_URL)';
