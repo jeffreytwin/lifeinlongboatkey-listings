@@ -54,19 +54,31 @@ async function uploadOne(url) {
     return fileInfo.fileUrl;
 }
 
-export async function uploadWithRetry(url) {
+// Returns { fileUrl, rateLimited }: rateLimited is true when any attempt
+// got a 429, even if a later attempt succeeded, so the caller can slow the
+// rest of the gallery down instead of tripping the limit again.
+export async function uploadWithRetryInfo(url) {
     let lastErr;
+    let rateLimited = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         try {
-            return await uploadOne(url);
+            const fileUrl = await uploadOne(url);
+            return { fileUrl, rateLimited };
         } catch (err) {
             lastErr = err;
+            if (isRateLimited(err)) rateLimited = true;
             if (attempt < MAX_ATTEMPTS - 1) {
                 await wait((isRateLimited(err) ? RATE_LIMIT_BACKOFF_MS : 500) * (attempt + 1));
             }
         }
     }
+    lastErr.rateLimited = rateLimited;
     throw lastErr;
+}
+
+export async function uploadWithRetry(url) {
+    const r = await uploadWithRetryInfo(url);
+    return r.fileUrl;
 }
 
 function isPendingItem(item) {
@@ -151,8 +163,9 @@ export async function processMediaQueueStep(deadline, runKey) {
                 const item = gallery[idx];
                 const mlsUrl = item.src;
                 try {
-                    const wixUrl = await uploadWithRetry(mlsUrl);
-                    return { idx, wixUrl, mlsUrl, ok: true };
+                    const up = await uploadWithRetryInfo(mlsUrl);
+                    if (up.rateLimited) rateLimited = true;
+                    return { idx, wixUrl: up.fileUrl, mlsUrl, ok: true };
                 } catch (err) {
                     console.log('processMediaQueueStep upload failed', mlsUrl, err && err.message);
                     if (!firstError) firstError = err && err.message ? err.message : String(err);
