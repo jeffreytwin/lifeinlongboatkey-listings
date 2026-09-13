@@ -1,8 +1,9 @@
 import wixData from 'wix-data';
 
 const COLLECTION = 'HousesforSale';
+const STAGGING = 'Stagging';
 
-async function fetchExistingByIds(ids) {
+async function fetchExistingByIds(ids, collection = COLLECTION) {
     const cleanIds = [];
     const seen = new Set();
     for (const id of (ids || [])) {
@@ -17,7 +18,7 @@ async function fetchExistingByIds(ids) {
     for (let i = 0; i < cleanIds.length; i += 100) chunks.push(cleanIds.slice(i, i + 100));
     const found = new Map();
     for (const chunk of chunks) {
-        const res = await wixData.query(COLLECTION).hasSome('_id', chunk).limit(1000).find({ suppressAuth: true });
+        const res = await wixData.query(collection).hasSome('_id', chunk).limit(1000).find({ suppressAuth: true });
         for (const item of res.items) found.set(item._id, item);
     }
     return found;
@@ -36,18 +37,96 @@ async function fetchAllIds() {
     return all;
 }
 
-function hasMeaningfulChange(existing, incoming) {
+function fmtPrice(n) {
+    if (typeof n !== 'number') return n == null ? 'n/a' : String(n);
+    return `$${n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+}
+
+// MLS-side photo identity for a gallery item: the MLS URL it came from
+// (kept as mlsSourceUrl once uploaded), or the raw URL while still pending.
+function mlsPhotoKey(g) {
+    if (!g) return null;
+    if (g.mlsSourceUrl) return g.mlsSourceUrl;
+    return typeof g.src === 'string' && g.src.startsWith('http') ? g.src : null;
+}
+
+function sameStamp(a, b) {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    return new Date(a).getTime() === new Date(b).getTime();
+}
+
+// Photo-level diff between the stored gallery and the incoming MLS gallery,
+// using the same identity mergeGallery uses (MLS URL + MLS modification
+// stamp), so the update reason and the restage decision cannot disagree.
+//   unchanged - same URL, same stamp (kept as already hosted)
+//   retouched - same URL, new stamp (re-uploaded)
+//   added     - URL not in the stored gallery
+//   dropped   - stored URL not in the incoming gallery
+//   legacy    - stored wix-hosted photos with no MLS identity (uploaded by
+//               the old dashboard); they cannot be matched and will re-upload
+export function galleryDiff(existing, incoming) {
+    const prev = Array.isArray(existing) ? existing : [];
+    const next = Array.isArray(incoming) ? incoming : [];
+    const prevByKey = new Map();
+    let legacy = 0;
+    for (const g of prev) {
+        const k = mlsPhotoKey(g);
+        if (k) prevByKey.set(k, g);
+        else if (g && typeof g.src === 'string') legacy += 1;
+    }
+    let unchanged = 0;
+    let retouched = 0;
+    let added = 0;
+    const seen = new Set();
+    for (const g of next) {
+        const k = mlsPhotoKey(g);
+        if (!k) continue;
+        seen.add(k);
+        const p = prevByKey.get(k);
+        if (!p) added += 1;
+        else if (sameStamp(p.mlsModificationTimestamp, g.mlsModificationTimestamp)) unchanged += 1;
+        else retouched += 1;
+    }
+    let dropped = 0;
+    for (const k of prevByKey.keys()) if (!seen.has(k)) dropped += 1;
+    return { before: prev.length, after: next.length, unchanged, retouched, added, dropped, legacy };
+}
+
+export function describeGalleryDiff(d) {
+    if (!d) return null;
+    const parts = [];
+    if (d.added) parts.push(`${d.added} new`);
+    if (d.dropped) parts.push(`${d.dropped} dropped`);
+    if (d.retouched) parts.push(`${d.retouched} retouched`);
+    if (d.legacy) parts.push(`${d.legacy} legacy without MLS identity`);
+    if (d.added === d.before && d.dropped === d.before && d.before > 0 && d.after === d.before) {
+        return `photo URLs reissued by MLS (${d.after} re-upload)`;
+    }
+    return `photos ${d.before} -> ${d.after} (${parts.join(', ') || 'no change'})`;
+}
+
+// Why an existing row needs rewriting. Returns [] when nothing meaningful
+// changed. Each entry is a short human sentence; the structured `fields`
+// map on the returned object carries old/new values for the event log.
+export function changeReasons(existing, incoming) {
+    try {
+        return computeChangeReasons(existing, incoming);
+    } catch (err) {
+        // Never let a reason builder take the sync down: fall back to the
+        // original meaningful-change test with a generic reason.
+        console.log('changeReasons failed', err && err.message);
+        return legacyMeaningfulChange(existing, incoming)
+            ? { reasons: ['changed (detail unavailable)'], fields: {} }
+            : { reasons: [], fields: {} };
+    }
+}
+
+function legacyMeaningfulChange(existing, incoming) {
     if (!existing) return true;
     if (existing.listingPricePure !== incoming.listingPricePure) return true;
     if (existing.standardStatus !== incoming.standardStatus) return true;
-    // Address format changes (e.g. adding unit numbers) must propagate even
-    // when price/status/timestamp are unchanged, since propertyAddress is the
-    // dynamic page URL key and must be unique.
     if (existing.propertyAddress !== incoming.propertyAddress) return true;
-    // Self-heal: rows written before the land bed/bath zero-defaults
-    // (2026-07) carry blank bedrooms/bathrooms even though the transform
-    // now emits explicit zeros. Once every stale row has been rewritten by
-    // a full pass, these never fire again.
     if (existing.bedrooms == null && incoming.bedrooms != null) return true;
     if (existing.bathrooms == null && incoming.bathrooms != null) return true;
     const a = existing.modificationTimestamp ? new Date(existing.modificationTimestamp).getTime() : 0;
@@ -55,45 +134,202 @@ function hasMeaningfulChange(existing, incoming) {
     return b > a;
 }
 
+function computeChangeReasons(existing, incoming) {
+    const reasons = [];
+    const fields = {};
+    if (!existing) return { reasons: ['new listing'], fields };
+
+    if (existing.listingPricePure !== incoming.listingPricePure) {
+        reasons.push(`price ${fmtPrice(existing.listingPricePure)} -> ${fmtPrice(incoming.listingPricePure)}`);
+        fields.price = [existing.listingPricePure, incoming.listingPricePure];
+    }
+    if (existing.standardStatus !== incoming.standardStatus) {
+        reasons.push(`status ${existing.standardStatus || 'n/a'} -> ${incoming.standardStatus || 'n/a'}`);
+        fields.status = [existing.standardStatus, incoming.standardStatus];
+    }
+    // Address format changes (e.g. adding unit numbers) must propagate even
+    // when price/status/timestamp are unchanged, since propertyAddress is the
+    // dynamic page URL key and must be unique.
+    if (existing.propertyAddress !== incoming.propertyAddress) {
+        reasons.push(`address "${existing.propertyAddress || ''}" -> "${incoming.propertyAddress || ''}"`);
+        fields.address = [existing.propertyAddress, incoming.propertyAddress];
+    }
+    // Self-heal: rows written before the land bed/bath zero-defaults
+    // (2026-07) carry blank bedrooms/bathrooms even though the transform
+    // now emits explicit zeros. Once every stale row has been rewritten by
+    // a full pass, these never fire again.
+    if (existing.bedrooms == null && incoming.bedrooms != null) {
+        reasons.push('bedrooms backfilled');
+        fields.bedrooms = [existing.bedrooms, incoming.bedrooms];
+    }
+    if (existing.bathrooms == null && incoming.bathrooms != null) {
+        reasons.push('bathrooms backfilled');
+        fields.bathrooms = [existing.bathrooms, incoming.bathrooms];
+    }
+    const a = existing.modificationTimestamp ? new Date(existing.modificationTimestamp).getTime() : 0;
+    const b = incoming.modificationTimestamp ? new Date(incoming.modificationTimestamp).getTime() : 0;
+    if (b > a) {
+        // Only describe photo changes when the MLS timestamp moved: the
+        // incoming gallery is raw MLS URLs and can only be compared by
+        // source URL, which is exactly what MLSGrid rotates on a re-upload.
+        const gd = galleryDiff(existing.listingImageGallery, incoming.listingImageGallery);
+        if (gd.added || gd.dropped || gd.retouched || (gd.legacy && gd.after)) {
+            reasons.push(describeGalleryDiff(gd));
+            fields.photos = gd;
+        }
+        const otherFields = [
+            ['bedrooms', 'bedrooms'], ['bathrooms', 'bathrooms'], ['squareFeet', 'sqft'],
+            ['homeType', 'home type'], ['village', 'village'], ['subdivision', 'subdivision'],
+            ['listingAgentName', 'agent'], ['listingAgentCompany', 'brokerage'], ['garages', 'garage'],
+            ['virtualTourUrl', 'virtual tour'], ['propertyDescription', 'description']
+        ];
+        for (const [key, label] of otherFields) {
+            const was = existing[key];
+            const now = incoming[key];
+            if (was === now || (was == null && now == null)) continue;
+            if (key === 'propertyDescription') {
+                reasons.push('description changed');
+                fields[key] = [was == null ? 0 : String(was).length, now == null ? 0 : String(now).length]; // lengths only
+            } else {
+                reasons.push(`${label} ${was == null ? 'n/a' : was} -> ${now == null ? 'n/a' : now}`);
+                fields[key] = [was, now];
+            }
+        }
+        fields.modificationTimestamp = [existing.modificationTimestamp || null, incoming.modificationTimestamp || null];
+        if (!reasons.length) {
+            reasons.push(`MLS modified ${incoming.modificationTimestamp ? new Date(incoming.modificationTimestamp).toISOString() : ''} (no displayed field changed)`);
+        }
+    }
+    return { reasons, fields };
+}
+
+function hasMeaningfulChange(existing, incoming) {
+    return changeReasons(existing, incoming).reasons.length > 0;
+}
+
+// incomingRemovals: [{ id, reason, reasonCode, mls: {...} }] (bare ids are
+// accepted and get a generic reason). The plan carries the whole removal
+// object through so the write phase can record what got deleted and why.
+function normalizeRemovals(incomingRemovals) {
+    return (incomingRemovals || []).map(r => (typeof r === 'object' && r !== null)
+        ? r
+        : { id: r, reason: 'routed to removal', reasonCode: 'unspecified' });
+}
+
+// Listings that leave the market while still in Stagging (never live) must
+// be removed too, or they leak partial uploads and can later publish as if
+// Active. Returns [{ prev, removal }] for removal ids present in Stagging
+// and NOT live: a live listing's Stagging twin (a photo-swap round) is
+// cleaned up by the delete loop together with the live row and its media.
+async function planUnstage(removals, liveIds) {
+    const candidates = removals.filter(r => !(liveIds && liveIds.has(r.id)));
+    if (!candidates.length) return [];
+    const staged = await fetchExistingByIds(candidates.map(r => r.id), STAGGING);
+    const toUnstage = [];
+    for (const r of candidates) {
+        const prev = staged.get(r.id);
+        // Legacy Redfin-audit rows (no isPublished flag, raw media objects)
+        // are not this pipeline's to drop; see README "Auditing".
+        if (prev && isPipelineStaggingRow(prev)) toUnstage.push({ prev, removal: r, reason: r.reason });
+    }
+    return toUnstage;
+}
+
+// Same test as pipeline.jsw's fetchLivePipelineStaggingIds and compare.jsw's
+// isLivePipelineRow: rows this pipeline wrote carry isPublished.
+function isPipelineStaggingRow(row) {
+    if (Object.prototype.hasOwnProperty.call(row, 'isPublished')) return true;
+    const g = row.listingImageGallery;
+    if (Array.isArray(g) && g.length) return typeof g[0].src === 'string';
+    return false;
+}
+
 export async function planIncremental(incomingUpserts, incomingRemovals) {
-    const allIds = [...incomingUpserts.map(i => i._id), ...incomingRemovals];
+    const removals = normalizeRemovals(incomingRemovals);
+    const allIds = [...incomingUpserts.map(i => i._id), ...removals.map(r => r.id)];
     const existing = await fetchExistingByIds(allIds);
 
     const toInsert = [];
     const toUpdate = [];
     for (const item of incomingUpserts) {
         const prev = existing.get(item._id);
-        if (!prev) toInsert.push(item);
-        else if (hasMeaningfulChange(prev, item)) toUpdate.push({ item, prev });
+        if (!prev) {
+            toInsert.push(item);
+            continue;
+        }
+        const change = changeReasons(prev, item);
+        if (change.reasons.length) toUpdate.push({ item, prev, reasons: change.reasons, fields: change.fields });
     }
 
     const toDelete = [];
-    for (const id of incomingRemovals) {
-        const prev = existing.get(id);
-        if (prev) toDelete.push(prev);
+    for (const r of removals) {
+        const prev = existing.get(r.id);
+        if (prev) toDelete.push({ prev, removal: r, reason: r.reason });
     }
-    return { toInsert, toUpdate, toDelete };
+    const toUnstage = await planUnstage(removals, new Set(existing.keys()));
+    return { toInsert, toUpdate, toDelete, toUnstage };
 }
 
-export async function planFull(incomingUpserts) {
+const NOT_IN_FEED = {
+    reason: 'MLSGrid no longer returns this listing (removed from the feed)',
+    reasonCode: 'not_in_feed'
+};
+
+// Full reconcile. `removals` are the rows classify routed to removal (status
+// flip, property type, no village match, city change, MLS revoked); anything
+// else missing from the verify-by-id fetch is a listing MLSGrid no longer
+// returns at all. `stagedIds` (optional): Stagging ids that were included in
+// the verify fetch, so staged rows can be reconciled the same way.
+export async function planFull(incomingUpserts, incomingRemovals, stagedIds) {
+    const removals = normalizeRemovals(incomingRemovals);
+    const removalById = new Map(removals.map(r => [r.id, r]));
     const incomingIds = new Set(incomingUpserts.map(i => i._id));
     const existingIds = await fetchAllIds();
     const existing = await fetchExistingByIds(existingIds);
 
+    const stagedSet = new Set(Array.isArray(stagedIds) ? stagedIds : []);
     const toInsert = [];
     const toUpdate = [];
+    // Staged-but-not-live listings that are still Active: refresh the
+    // staged copy with the latest MLS data (fresh photo URLs in particular)
+    // without counting them as inserts every night.
+    const toRestage = [];
     for (const item of incomingUpserts) {
         const prev = existing.get(item._id);
-        if (!prev) toInsert.push(item);
-        else if (hasMeaningfulChange(prev, item)) toUpdate.push({ item, prev });
+        if (!prev) {
+            if (stagedSet.has(item._id)) toRestage.push(item);
+            else toInsert.push(item);
+            continue;
+        }
+        const change = changeReasons(prev, item);
+        if (change.reasons.length) toUpdate.push({ item, prev, reasons: change.reasons, fields: change.fields });
     }
 
     const toDelete = [];
     for (const id of existingIds) {
         if (!incomingIds.has(id)) {
             const prev = existing.get(id);
-            if (prev) toDelete.push(prev);
+            if (prev) {
+                const removal = removalById.get(id) || { id, ...NOT_IN_FEED };
+                toDelete.push({ prev, removal, reason: removal.reason });
+            }
         }
     }
-    return { toInsert, toUpdate, toDelete };
+
+    // Staged rows: anything verified and not still upsert-worthy leaves
+    // Stagging with its reason; rows not covered by the verify fetch are
+    // left alone (they'll be re-evaluated when their listing next changes).
+    const toUnstage = [];
+    if (Array.isArray(stagedIds) && stagedIds.length) {
+        const liveIds = new Set(existingIds);
+        const staged = await fetchExistingByIds(stagedIds, STAGGING);
+        for (const id of stagedIds) {
+            const prev = staged.get(id);
+            // A live listing's twin is handled by the delete loop above.
+            if (!prev || incomingIds.has(id) || liveIds.has(id)) continue;
+            const removal = removalById.get(id) || { id, ...NOT_IN_FEED };
+            toUnstage.push({ prev, removal, reason: removal.reason });
+        }
+    }
+    return { toInsert, toUpdate, toDelete, toUnstage, toRestage };
 }

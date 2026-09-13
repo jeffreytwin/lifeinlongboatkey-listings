@@ -10,6 +10,9 @@
 //   #lastRunInserted, #lastRunUpdated, #lastRunDeleted,
 //   #lastRunImagesUploaded, #lastRunImagesFailed, #lastRunError,
 //   #runsRepeater, #btnRunIncremental, #btnRunFull, #statusMessage
+//
+// A row with status 'running' is a run in progress (or, if older than a few
+// minutes, one the Wix timeout killed - see README "Monitoring").
 
 import wixData from 'wix-data';
 import { runSync } from 'backend/sync/pipeline';
@@ -60,7 +63,7 @@ async function triggerRun(mode) {
     $w('#statusMessage').text = `Triggering ${mode} run - this may take a while...`;
 
     try {
-        const result = await runSync(mode);
+        const result = await runSync(mode, { trigger: 'page' });
         $w('#statusMessage').text = `Run ${result.status || 'ok'}: inserted ${result.inserted || 0}, updated ${result.updated || 0}, deleted ${result.deleted || 0}.`;
     } catch (err) {
         $w('#statusMessage').text = `Run failed: ${err && err.message ? err.message : err}`;
