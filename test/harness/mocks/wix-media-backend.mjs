@@ -1,0 +1,1 @@
+export const mediaManager = { async upload(folder, buf, url) { return { fileUrl: `wix:image://v1/${Buffer.from(url).toString('base64').slice(0,12)}` }; }, async moveFilesToTrash() { return 'done'; } };
